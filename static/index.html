@@ -1,3 +1,4 @@
+<!-- filepath: c:\WS\trae\PythonService\static\index.html -->
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -14,15 +15,30 @@
         label { display: block; margin-bottom: 5px; font-weight: bold; }
         input[type="file"], button, select { padding: 10px; margin-top: 5px; border-radius: 4px; border: 1px solid #ccc; }
         button { background-color: #5cb85c; color: white; cursor: pointer; border: none; }
-        button:hover { background-color: #4cae4c; }
-        #fileList { list-style: none; padding: 0; }
-        #fileList li { padding: 8px; border-bottom: 1px solid #eee; cursor: pointer; }
+        button:hover { background-color: #4cae4c; }        #fileList { list-style: none; padding: 0; }
+        #fileList li { padding: 8px; border-bottom: 1px solid #eee; }
         #fileList li:hover { background-color: #f0f0f0; }
         #editorContainer { margin-top: 10px; }
         .CodeMirror { border: 1px solid #ddd; height: 400px; }
+        .drop-area { 
+            border: 2px dashed #ccc; 
+            border-radius: 8px; 
+            padding: 20px; 
+            text-align: center; 
+            background: #f8f8f8;
+            transition: all 0.3s ease;
+        }
+        .drop-area.active { 
+            border-color: #5cb85c; 
+            background-color: rgba(92, 184, 92, 0.1); 
+        }
         #saveButton { background-color: #f0ad4e; margin-left: 10px; }
         #saveButton:hover { background-color: #ec971f; }
+        .deleteButton { background-color: #d9534f; color: white; cursor: pointer; border: none; padding: 5px 8px; margin-left: 5px; border-radius: 3px; font-size: 0.8em; }
+        .deleteButton:hover { background-color: #c9302c; }
         #status { margin-top: 15px; font-style: italic; color: #555; }
+        .fileListItem { display: flex; justify-content: space-between; align-items: center; }
+        .filename { cursor: pointer; flex-grow: 1; }
     </style>
 </head>
 <body>
@@ -35,7 +51,7 @@
                 <li><strong>Upload Service:</strong> Use the "Choose File" button and "Upload Service" to upload a Python file (`.py`) containing a FastAPI `APIRouter` instance.</li>
                 <li><strong>Access Endpoints:</strong> Once uploaded, the service's endpoints are available under the path `/module_name/your_endpoint`. For example, if you upload `my_service.py` with an endpoint `/data`, it will be accessible at `/my_service/data`.</li>
                 <li><strong>View All Services:</strong> Go to <a href="/docs" target="_blank">/docs</a> to see the automatically generated OpenAPI documentation for all loaded services and their endpoints.</li>
-                <li><strong>Manage Files:</strong> Use the file list below to view, edit, or save changes to the uploaded service files. Changes are automatically reloaded.</li>
+                <li><strong>Manage Files:</strong> Use the file list below to view, edit, delete, or save changes to the uploaded service files. Changes are automatically reloaded.</li>
             </ol>
         </div>
 
@@ -51,12 +67,13 @@
             </ul>
         </div>
 
-        <hr>
-
-        <div class="section">
+        <hr>        <div class="section">
             <h2>Upload Microservice (.py)</h2>
-            <input type="file" id="fileInput" accept=".py">
-            <button id="uploadButton">Upload</button>
+            <div id="dropArea" class="drop-area">
+                <p>Drag & drop a Python file here, or</p>
+                <input type="file" id="fileInput" accept=".py">
+                <button id="uploadButton">Upload</button>
+            </div>
         </div>
 
         <div class="section">
@@ -76,8 +93,7 @@
     </div>
 
     <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.0/codemirror.min.js"></script>
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.0/mode/python/python.min.js"></script>
-    <script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.0/mode/python/python.min.js"></script>    <script>
         const fileInput = document.getElementById('fileInput');
         const uploadButton = document.getElementById('uploadButton');
         const fileList = document.getElementById('fileList');
@@ -85,8 +101,85 @@
         const editorContainer = document.getElementById('editorContainer');
         const saveButton = document.getElementById('saveButton');
         const statusDiv = document.getElementById('status');
+        const dropArea = document.getElementById('dropArea');
         let editor = null;
         let currentFilename = null;
+        
+        // Drag and Drop functionality
+        ['dragenter', 'dragover', 'dragleave', 'drop'].forEach(eventName => {
+            dropArea.addEventListener(eventName, preventDefaults, false);
+        });
+        
+        function preventDefaults(e) {
+            e.preventDefault();
+            e.stopPropagation();
+        }
+        
+        ['dragenter', 'dragover'].forEach(eventName => {
+            dropArea.addEventListener(eventName, highlight, false);
+        });
+        
+        ['dragleave', 'drop'].forEach(eventName => {
+            dropArea.addEventListener(eventName, unhighlight, false);
+        });
+        
+        function highlight() {
+            dropArea.classList.add('active');
+        }
+        
+        function unhighlight() {
+            dropArea.classList.remove('active');
+        }
+        
+        dropArea.addEventListener('drop', handleDrop, false);
+        
+        function handleDrop(e) {
+            const dt = e.dataTransfer;
+            const files = dt.files;
+            
+            if (files.length > 0) {
+                fileInput.files = files;
+                // Trigger upload if it's a .py file
+                if (files[0].name.endsWith('.py')) {
+                    uploadFile(files[0]);
+                } else {
+                    statusDiv.textContent = 'Invalid file type. Only .py files are allowed.';
+                }
+            }
+        }
+        
+        // Refactored upload function to be reusable
+        async function uploadFile(file) {
+            if (!file) {
+                statusDiv.textContent = 'Please select a file to upload.';
+                return;
+            }
+            if (!file.name.endsWith('.py')) {
+                 statusDiv.textContent = 'Invalid file type. Only .py files are allowed.';
+                 return;
+            }
+
+            const formData = new FormData();
+            formData.append('file', file);
+
+            try {
+                statusDiv.textContent = 'Uploading...';
+                const response = await fetch('/upload', {
+                    method: 'POST',
+                    body: formData,
+                });
+                const result = await response.json();
+                if (!response.ok) {
+                    throw new Error(result.detail || `HTTP error! status: ${response.status}`);
+                }
+                statusDiv.textContent = `Success: ${result.message}`;
+                fileInput.value = ''; // Clear the file input
+                fetchFiles(); // Refresh the file list
+            } catch (error) {
+                statusDiv.textContent = `Upload failed: ${error.message}`;
+                console.error('Upload error:', error);
+            }
+        }
 
         // Initialize CodeMirror
         function initializeEditor(content) {
@@ -114,12 +207,33 @@
                 fileList.innerHTML = ''; // Clear existing list
                 fileSelector.innerHTML = '<option value="">-- Select a file --</option>'; // Clear and add default option
                 files.forEach(filename => {
-                    // Populate list
+                    // Create list item with filename and delete button
                     const li = document.createElement('li');
-                    li.textContent = filename;
-                    li.onclick = () => fetchFileContent(filename); // Add click handler to load content
+                    li.className = 'fileListItem';
+                    
+                    // Create a span for the filename
+                    const fileNameSpan = document.createElement('span');
+                    fileNameSpan.className = 'filename';
+                    fileNameSpan.textContent = filename;
+                    fileNameSpan.onclick = () => fetchFileContent(filename);
+                    
+                    // Create a delete button
+                    const deleteBtn = document.createElement('button');
+                    deleteBtn.textContent = 'Delete';
+                    deleteBtn.className = 'deleteButton';
+                    deleteBtn.onclick = (e) => {
+                        e.stopPropagation(); // Prevent triggering the li click event
+                        if (confirm(`Are you sure you want to delete ${filename}?`)) {
+                            deleteFile(filename);
+                        }
+                    };
+                    
+                    // Add elements to list item
+                    li.appendChild(fileNameSpan);
+                    li.appendChild(deleteBtn);
                     fileList.appendChild(li);
-                    // Populate dropdown
+                    
+                    // Populate dropdown selector
                     const option = document.createElement('option');
                     option.value = filename;
                     option.textContent = filename;
@@ -156,46 +270,41 @@
             }
         }
 
-        // Handle file upload
-        uploadButton.addEventListener('click', async () => {
-            const file = fileInput.files[0];
-            if (!file) {
-                statusDiv.textContent = 'Please select a file to upload.';
-                return;
-            }
-            if (!file.name.endsWith('.py')) {
-                 statusDiv.textContent = 'Invalid file type. Only .py files are allowed.';
-                 return;
-            }
-
-            const formData = new FormData();
-            formData.append('file', file);
-
+        // Delete a file
+        async function deleteFile(filename) {
             try {
-                statusDiv.textContent = 'Uploading...';
-                const response = await fetch('/upload', {
-                    method: 'POST',
-                    body: formData,
+                statusDiv.textContent = `Deleting ${filename}...`;
+                const response = await fetch(`/files/${filename}`, {
+                    method: 'DELETE'
                 });
                 const result = await response.json();
                 if (!response.ok) {
                     throw new Error(result.detail || `HTTP error! status: ${response.status}`);
                 }
                 statusDiv.textContent = `Success: ${result.message}`;
-                fileInput.value = ''; // Clear the file input
-                fetchFiles(); // Refresh the file list
+                
+                // If the deleted file was currently open in the editor, clear the editor
+                if (currentFilename === filename) {
+                    editorContainer.innerHTML = '';
+                    saveButton.style.display = 'none';
+                    currentFilename = null;
+                }
+                
+                // Refresh the file list
+                fetchFiles();
             } catch (error) {
-                statusDiv.textContent = `Upload failed: ${error.message}`;
-                console.error('Upload error:', error);
+                statusDiv.textContent = `Failed to delete ${filename}: ${error.message}`;
+                console.error('Delete error:', error);
             }
+        }        // Handle file upload
+        uploadButton.addEventListener('click', () => {
+            uploadFile(fileInput.files[0]);
         });
 
         // Handle file selection change
         fileSelector.addEventListener('change', (event) => {
             fetchFileContent(event.target.value);
-        });
-
-        // Handle save changes
+        });        // Handle save changes
         saveButton.addEventListener('click', async () => {
             if (!editor || !currentFilename) {
                 statusDiv.textContent = 'No file selected or editor not initialized.';
@@ -204,14 +313,13 @@
             const content = editor.getValue();
             try {
                 statusDiv.textContent = `Saving ${currentFilename}...`;
-                // Note: Sending content as form data for simplicity with the current Python endpoint
-                // A JSON body ({ "content": content }) might be more conventional
+                // Send content as a proper JSON object that matches the Pydantic model in FastAPI
                 const response = await fetch(`/files/${currentFilename}`, {
                     method: 'POST',
                     headers: {
-                        'Content-Type': 'application/x-www-form-urlencoded', // Matching FastAPI's default form handling
+                        'Content-Type': 'application/json', // Use JSON content type
                     },
-                    body: `content=${encodeURIComponent(content)}`
+                    body: JSON.stringify({ content: content }) // Match FileContent Pydantic model
                 });
                 const result = await response.json();
                  if (!response.ok) {

@@ -4,15 +4,20 @@ import importlib
 from pathlib import Path
 from typing import List
 
-from fastapi import FastAPI, File, UploadFile, HTTPException, APIRouter
+from fastapi import FastAPI, File, UploadFile, HTTPException, APIRouter, Body
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel
 
 # Ensure the modules directory is in the Python path
 MODULES_DIR = Path("modules")
 MODULES_DIR.mkdir(exist_ok=True)
 if str(MODULES_DIR.resolve()) not in sys.path:
     sys.path.insert(0, str(MODULES_DIR.resolve().parent)) # Add parent of modules to path
+
+# Define model for file content
+class FileContent(BaseModel):
+    content: str
 
 app = FastAPI(title="Dynamic Microservice Runner")
 
@@ -143,18 +148,45 @@ async def get_file_content(filename: str):
         raise HTTPException(status_code=500, detail=f"Failed to read file: {e}")
 
 @app.post("/files/{filename}", status_code=200)
-async def save_file_content(filename: str, content: str):
+async def save_file_content(filename: str, file_data: FileContent = Body(...)):
     """Saves new content to a specific Python file and reloads the module."""
     filepath = MODULES_DIR / filename
     if not filepath.exists() or not filename.endswith(".py"):
         raise HTTPException(status_code=404, detail="File not found or not a .py file.")
+    
     try:
+        # Debug - print the received data
+        print(f"Received data for {filename}: {file_data}")
+        
         with open(filepath, "w", encoding="utf-8") as f:
-            f.write(content)
+            f.write(file_data.content)
 
         # Reload the module after saving changes
         load_module(filename)
 
         return {"filename": filename, "message": "File saved and module reloaded successfully."}
     except Exception as e:
+        print(f"Error saving file {filename}: {e}")
         raise HTTPException(status_code=500, detail=f"Failed to save or reload file: {e}")
+
+@app.delete("/files/{filename}", status_code=200)
+async def delete_file(filename: str):
+    """Deletes a specific Python file from the modules directory."""
+    filepath = MODULES_DIR / filename
+    if not filepath.exists() or not filename.endswith(".py"):
+        raise HTTPException(status_code=404, detail="File not found or not a .py file.")
+    
+    try:
+        # Check if the module is loaded and remove it from loaded_routers
+        module_name = filename.removesuffix(".py")
+        prefix = f"/{module_name}"
+        if prefix in loaded_routers:
+            # Note: FastAPI doesn't support true router removal at runtime
+            # We just remove it from our tracking dictionary
+            del loaded_routers[prefix]
+        
+        # Delete the file
+        os.remove(filepath)
+        return {"filename": filename, "message": "File deleted successfully."}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to delete file: {e}")
