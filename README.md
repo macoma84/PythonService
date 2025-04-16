@@ -71,6 +71,24 @@ El entorno de ejecución incluye las siguientes bibliotecas principales (ver `re
 *   matplotlib
 *   numpy
 
+## Liberación de Nuevas Versiones
+
+Este proyecto utiliza GitHub Actions para construir y publicar automáticamente un paquete `.deb` cada vez que se crea una nueva etiqueta de versión en Git.
+
+Para liberar una nueva versión:
+
+1.  **Asegúrate de que tu rama principal (`main` o `master`) esté actualizada y que todos los cambios estén confirmados.**
+2.  **Crea una etiqueta de Git con el formato `vX.Y.Z` (por ejemplo, `v1.0.1`):**
+    ```bash
+    git tag v1.0.1
+    ```
+3.  **Empuja la etiqueta al repositorio remoto (GitHub):**
+    ```bash
+    git push origin v1.0.1
+    ```
+
+Esto activará el flujo de trabajo definido en `.github/workflows/build-deb.yml`. Una vez que el flujo de trabajo se complete con éxito, encontrarás el archivo `.deb` adjunto a la nueva "Release" en la sección de "Releases" de tu repositorio en GitHub.
+
 ## Ejecución
 py -m pip install -r requirements.txt
 py -m uvicorn main:app --host 0.0.0.0 --port 8000 --reload
