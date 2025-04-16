@@ -50,6 +50,31 @@ Este proyecto implementa un servidor FastAPI que puede cargar dinámicamente mó
     ```
     El servidor estará disponible en `http://localhost:8000`.
 
+### Configuración de Módulos Persistentes
+
+El servicio está configurado para utilizar un directorio externo para almacenar los módulos Python, permitiendo que estos persistan incluso cuando el contenedor Docker se reinicia o se reconstruye:
+
+1. **Directorio de Módulos:** 
+   - Por defecto, los módulos se almacenan en la carpeta `persistent_modules` en el host, que se monta en `/app/modules` dentro del contenedor.
+   - Esta configuración está definida en el archivo `docker-compose.yml`.
+
+2. **Personalización del Directorio:**
+   - Puedes cambiar la ubicación del directorio de módulos modificando el mapeo de volumen en `docker-compose.yml`:
+     ```yaml
+     volumes:
+       - ./tu_directorio_personalizado:/app/modules
+     ```
+   - También puedes modificar la variable de entorno `MODULES_DIR` en el mismo archivo:
+     ```yaml
+     environment:
+       - MODULES_DIR=/app/modules
+     ```
+
+3. **Funcionamiento:**
+   - Los archivos Python (.py) colocados en este directorio serán automáticamente detectados y cargados por la aplicación.
+   - Cualquier cambio en estos archivos persistirá entre reinicios del contenedor.
+   - No es necesario reconstruir la imagen Docker para actualizar los módulos.
+
 ## Uso
 
 1.  **Accede a la Interfaz Web:** Abre `http://localhost:8000` en tu navegador.

@@ -16,9 +16,10 @@ COPY . .
 # Make port 8000 available to the world outside this container
 EXPOSE 8000
 
-# Define environment variable
+# Define environment variables
 ENV MODULE_NAME main
 ENV VARIABLE_NAME app
+ENV MODULES_DIR=/app/modules
 
 # Run the application using Uvicorn
 # Use 0.0.0.0 to make it accessible from outside the container

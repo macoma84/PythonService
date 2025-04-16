@@ -10,7 +10,8 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 # Ensure the modules directory is in the Python path
-MODULES_DIR = Path("modules")
+# Get modules directory path from environment variable or use default
+MODULES_DIR = Path(os.environ.get("MODULES_DIR", "modules"))
 MODULES_DIR.mkdir(exist_ok=True)
 if str(MODULES_DIR.resolve()) not in sys.path:
     sys.path.insert(0, str(MODULES_DIR.resolve().parent)) # Add parent of modules to path
