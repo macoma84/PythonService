@@ -4,7 +4,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Dynamic Microservice Runner</title>
+    <title>Python Dynamic Microservice Runner</title>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.0/codemirror.min.css">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.0/theme/material-darker.min.css">
     <style>
@@ -53,17 +53,23 @@
                 <li><strong>View All Services:</strong> Go to <a href="/docs" target="_blank">/docs</a> to see the automatically generated OpenAPI documentation for all loaded services and their endpoints.</li>
                 <li><strong>Manage Files:</strong> Use the file list below to view, edit, delete, or save changes to the uploaded service files. Changes are automatically reloaded.</li>
             </ol>
-        </div>
-
-        <div class="section">
+        </div>        <div class="section">
             <h2>Supported Libraries</h2>
             <p>The following Python libraries are available in the execution environment:</p>
             <ul>
-                <li>fastapi (&gt;=0.100.0)</li>
-                <li>uvicorn[standard] (&gt;=0.20.0)</li>
-                <li>python-multipart (&gt;=0.0.6)</li>
-                <li>matplotlib (&gt;=3.0.0)</li>
-                <li>numpy (&gt;=1.18.0)</li>
+                <li><strong>fastapi</strong> (&gt;=0.100.0) - Modern, fast web framework for building APIs</li>
+                <li><strong>uvicorn[standard]</strong> (&gt;=0.20.0) - ASGI server for running FastAPI applications</li>
+                <li><strong>python-multipart</strong> (&gt;=0.0.6) - Streaming multipart parser for file uploads</li>
+                <li><strong>matplotlib</strong> (&gt;=3.0.0) - Comprehensive library for creating static, animated, and interactive visualizations</li>
+                <li><strong>numpy</strong> (&gt;=1.18.0) - Fundamental package for scientific computing with Python</li>
+                <li><strong>psycopg2-binary</strong> (&gt;=2.9.5) - PostgreSQL database adapter for Python</li>
+                <li><strong>pandas</strong> (&gt;=1.5.0) - Data analysis and manipulation library</li>
+                <li><strong>QuantLib</strong> (&gt;=1.29) - Library for quantitative finance</li>
+                <li><strong>qdrant-client</strong> (&gt;=1.1.1) - Client for Qdrant vector database for similarity search</li>
+                <li><strong>yfinance</strong> (&gt;=0.2.18) - Yahoo Finance market data downloader</li>
+                <li><strong>openai</strong> (&gt;=0.27.0) - OpenAI API client library for AI models integration</li>
+                <li><strong>redis</strong> (&gt;=4.5.0) - Redis database client for caching and messaging</li>
+                <li><strong>SQLAlchemy</strong> (&gt;=2.0.0) - SQL toolkit and Object-Relational Mapping (ORM) library</li>
             </ul>
         </div>
 
