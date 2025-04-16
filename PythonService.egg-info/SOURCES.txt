@@ -1,0 +1,9 @@
+MANIFEST.in
+README.md
+requirements.txt
+setup.py
+PythonService.egg-info/PKG-INFO
+PythonService.egg-info/SOURCES.txt
+PythonService.egg-info/dependency_links.txt
+PythonService.egg-info/requires.txt
+PythonService.egg-info/top_level.txt

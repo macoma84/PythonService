@@ -12,8 +12,8 @@ version = os.environ.get('RELEASE_VERSION', '0.1.0') # Default version if not se
 setup(
     name='PythonService',
     version=version,
-    author='Your Name / Organization',
-    author_email='your.email@example.com',
+    author='Mariano',
+    author_email='macoma84@gmail.com',
     description='A FastAPI service packaged as a .deb file.',
     long_description=open('README.md').read(),
     long_description_content_type='text/markdown',
@@ -23,7 +23,7 @@ setup(
     install_requires=read_requirements(), # Read dependencies from requirements.txt
     classifiers=[
         'Programming Language :: Python :: 3',
-        'License :: OSI Approved :: MIT License', # Choose your license
+        'License :: MIT License', # Choose your license
         'Operating System :: OS Independent',
         'Framework :: FastAPI',
     ],
