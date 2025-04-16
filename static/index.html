@@ -1,0 +1,231 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Dynamic Microservice Runner</title>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.0/codemirror.min.css">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.0/theme/material-darker.min.css">
+    <style>
+        body { font-family: sans-serif; margin: 20px; background-color: #f4f4f4; }
+        .container { max-width: 1000px; margin: auto; background: #fff; padding: 20px; border-radius: 8px; box-shadow: 0 0 10px rgba(0,0,0,0.1); }
+        h1, h2 { color: #333; }
+        .section { margin-bottom: 20px; padding: 15px; border: 1px solid #ddd; border-radius: 4px; }
+        label { display: block; margin-bottom: 5px; font-weight: bold; }
+        input[type="file"], button, select { padding: 10px; margin-top: 5px; border-radius: 4px; border: 1px solid #ccc; }
+        button { background-color: #5cb85c; color: white; cursor: pointer; border: none; }
+        button:hover { background-color: #4cae4c; }
+        #fileList { list-style: none; padding: 0; }
+        #fileList li { padding: 8px; border-bottom: 1px solid #eee; cursor: pointer; }
+        #fileList li:hover { background-color: #f0f0f0; }
+        #editorContainer { margin-top: 10px; }
+        .CodeMirror { border: 1px solid #ddd; height: 400px; }
+        #saveButton { background-color: #f0ad4e; margin-left: 10px; }
+        #saveButton:hover { background-color: #ec971f; }
+        #status { margin-top: 15px; font-style: italic; color: #555; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Dynamic Microservice Runner</h1>
+
+        <div class="instructions">
+            <h2>How to Use</h2>
+            <ol>
+                <li><strong>Upload Service:</strong> Use the "Choose File" button and "Upload Service" to upload a Python file (`.py`) containing a FastAPI `APIRouter` instance.</li>
+                <li><strong>Access Endpoints:</strong> Once uploaded, the service's endpoints are available under the path `/module_name/your_endpoint`. For example, if you upload `my_service.py` with an endpoint `/data`, it will be accessible at `/my_service/data`.</li>
+                <li><strong>View All Services:</strong> Go to <a href="/docs" target="_blank">/docs</a> to see the automatically generated OpenAPI documentation for all loaded services and their endpoints.</li>
+                <li><strong>Manage Files:</strong> Use the file list below to view, edit, or save changes to the uploaded service files. Changes are automatically reloaded.</li>
+            </ol>
+        </div>
+
+        <div class="section">
+            <h2>Supported Libraries</h2>
+            <p>The following Python libraries are available in the execution environment:</p>
+            <ul>
+                <li>fastapi (&gt;=0.100.0)</li>
+                <li>uvicorn[standard] (&gt;=0.20.0)</li>
+                <li>python-multipart (&gt;=0.0.6)</li>
+                <li>matplotlib (&gt;=3.0.0)</li>
+                <li>numpy (&gt;=1.18.0)</li>
+            </ul>
+        </div>
+
+        <hr>
+
+        <div class="section">
+            <h2>Upload Microservice (.py)</h2>
+            <input type="file" id="fileInput" accept=".py">
+            <button id="uploadButton">Upload</button>
+        </div>
+
+        <div class="section">
+            <h2>Available Microservices</h2>
+            <ul id="fileList"></ul>
+        </div>
+
+        <div class="section">
+            <h2>Edit Microservice</h2>
+            <label for="fileSelector">Select file to edit:</label>
+            <select id="fileSelector"><option value="">-- Select a file --</option></select>
+            <button id="saveButton" style="display: none;">Save Changes</button>
+            <div id="editorContainer"></div>
+        </div>
+
+        <div id="status"></div>
+    </div>
+
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.0/codemirror.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.0/mode/python/python.min.js"></script>
+    <script>
+        const fileInput = document.getElementById('fileInput');
+        const uploadButton = document.getElementById('uploadButton');
+        const fileList = document.getElementById('fileList');
+        const fileSelector = document.getElementById('fileSelector');
+        const editorContainer = document.getElementById('editorContainer');
+        const saveButton = document.getElementById('saveButton');
+        const statusDiv = document.getElementById('status');
+        let editor = null;
+        let currentFilename = null;
+
+        // Initialize CodeMirror
+        function initializeEditor(content) {
+            if (editor) {
+                editor.toTextArea(); // Clean up previous instance if any
+            }
+            editorContainer.innerHTML = ''; // Clear previous editor
+            const textArea = document.createElement('textarea');
+            editorContainer.appendChild(textArea);
+            textArea.value = content;
+            editor = CodeMirror.fromTextArea(textArea, {
+                lineNumbers: true,
+                mode: 'python',
+                theme: 'material-darker'
+            });
+            saveButton.style.display = 'inline-block';
+        }
+
+        // Fetch and display the list of files
+        async function fetchFiles() {
+            try {
+                const response = await fetch('/files');
+                if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
+                const files = await response.json();
+                fileList.innerHTML = ''; // Clear existing list
+                fileSelector.innerHTML = '<option value="">-- Select a file --</option>'; // Clear and add default option
+                files.forEach(filename => {
+                    // Populate list
+                    const li = document.createElement('li');
+                    li.textContent = filename;
+                    li.onclick = () => fetchFileContent(filename); // Add click handler to load content
+                    fileList.appendChild(li);
+                    // Populate dropdown
+                    const option = document.createElement('option');
+                    option.value = filename;
+                    option.textContent = filename;
+                    fileSelector.appendChild(option);
+                });
+            } catch (error) {
+                statusDiv.textContent = `Error fetching files: ${error.message}`;
+                console.error('Error fetching files:', error);
+            }
+        }
+
+        // Fetch content of a specific file
+        async function fetchFileContent(filename) {
+            if (!filename) {
+                editorContainer.innerHTML = ''; // Clear editor
+                saveButton.style.display = 'none';
+                currentFilename = null;
+                return;
+            }
+            try {
+                statusDiv.textContent = `Loading ${filename}...`;
+                const response = await fetch(`/files/${filename}`);
+                if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
+                const data = await response.json();
+                currentFilename = filename;
+                initializeEditor(data.content);
+                statusDiv.textContent = `${filename} loaded.`;
+            } catch (error) {
+                statusDiv.textContent = `Error loading file ${filename}: ${error.message}`;
+                console.error('Error loading file:', error);
+                currentFilename = null;
+                editorContainer.innerHTML = '';
+                saveButton.style.display = 'none';
+            }
+        }
+
+        // Handle file upload
+        uploadButton.addEventListener('click', async () => {
+            const file = fileInput.files[0];
+            if (!file) {
+                statusDiv.textContent = 'Please select a file to upload.';
+                return;
+            }
+            if (!file.name.endsWith('.py')) {
+                 statusDiv.textContent = 'Invalid file type. Only .py files are allowed.';
+                 return;
+            }
+
+            const formData = new FormData();
+            formData.append('file', file);
+
+            try {
+                statusDiv.textContent = 'Uploading...';
+                const response = await fetch('/upload', {
+                    method: 'POST',
+                    body: formData,
+                });
+                const result = await response.json();
+                if (!response.ok) {
+                    throw new Error(result.detail || `HTTP error! status: ${response.status}`);
+                }
+                statusDiv.textContent = `Success: ${result.message}`;
+                fileInput.value = ''; // Clear the file input
+                fetchFiles(); // Refresh the file list
+            } catch (error) {
+                statusDiv.textContent = `Upload failed: ${error.message}`;
+                console.error('Upload error:', error);
+            }
+        });
+
+        // Handle file selection change
+        fileSelector.addEventListener('change', (event) => {
+            fetchFileContent(event.target.value);
+        });
+
+        // Handle save changes
+        saveButton.addEventListener('click', async () => {
+            if (!editor || !currentFilename) {
+                statusDiv.textContent = 'No file selected or editor not initialized.';
+                return;
+            }
+            const content = editor.getValue();
+            try {
+                statusDiv.textContent = `Saving ${currentFilename}...`;
+                // Note: Sending content as form data for simplicity with the current Python endpoint
+                // A JSON body ({ "content": content }) might be more conventional
+                const response = await fetch(`/files/${currentFilename}`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/x-www-form-urlencoded', // Matching FastAPI's default form handling
+                    },
+                    body: `content=${encodeURIComponent(content)}`
+                });
+                const result = await response.json();
+                 if (!response.ok) {
+                    throw new Error(result.detail || `HTTP error! status: ${response.status}`);
+                }
+                statusDiv.textContent = `Success: ${result.message}`;
+            } catch (error) {
+                statusDiv.textContent = `Error saving file ${currentFilename}: ${error.message}`;
+                console.error('Save error:', error);
+            }
+        });
+
+        // Initial load of files
+        fetchFiles();
+    </script>
+</body>
+</html>

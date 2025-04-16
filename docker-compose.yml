@@ -1,0 +1,12 @@
+version: '3'
+
+services:
+  dynapi:
+    build: .
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./uploaded_scripts:/app/modules
+    # Optional: Add environment variables if needed
+    # environment:
+    #   - MY_VAR=my_value
