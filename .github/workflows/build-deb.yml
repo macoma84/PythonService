@@ -33,14 +33,40 @@ jobs:
         run: echo ::set-output name=VERSION::${GITHUB_REF#refs/tags/v}
         # Extracts '1.0.0' from 'refs/tags/v1.0.0'
 
-      - name: Build .deb package
+      - name: Generate Debian source files
         env:
           RELEASE_VERSION: ${{ steps.get_version.outputs.VERSION }}
-        run: python setup.py --command-packages=stdeb.command bdist_deb
-        # The .deb file will be created in the deb_dist/ directory
+        run: python setup.py --command-packages=stdeb.command sdist_dsc
+        # This creates deb_dist/pythonservice-VERSION/debian/
+
+      - name: Find source directory name
+        id: find_src_dir
+        run: echo "SRC_DIR=$(ls deb_dist | grep pythonservice-)" >> $GITHUB_ENV
+
+      - name: Update debian/compat
+        run: echo 13 > deb_dist/${{ env.SRC_DIR }}/debian/compat
+
+      - name: Update debian/rules
+        run: |
+          cat <<EOF > deb_dist/${{ env.SRC_DIR }}/debian/rules
+#!/usr/bin/make -f
+
+%:
+	dh $@ --with python3 --buildsystem=pybuild
+EOF
+
+      # Optional: Add/Ensure debhelper >= 13 in debian/control if needed
+      # run: sed -i 's/^Build-Depends:.*/&, debhelper (>= 13)/' deb_dist/${{ env.SRC_DIR }}/debian/control
+      # Or a more robust sed/awk script depending on stdeb's output
+
+      - name: Build .deb package
+        run: |
+          cd deb_dist/${{ env.SRC_DIR }}
+          dpkg-buildpackage -us -uc -b
 
       - name: List generated files
         run: ls -l deb_dist/
+        # dpkg-buildpackage creates the .deb in the parent dir (deb_dist/)
 
       - name: Create Release
         id: create_release
@@ -59,6 +85,6 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           upload_url: ${{ steps.create_release.outputs.upload_url }}
-          asset_path: ./deb_dist/pythonservice_${{ steps.get_version.outputs.VERSION }}-1_all.deb # Adjust filename pattern if needed
-          asset_name: PythonService_${{ steps.get_version.outputs.VERSION }}.deb
+          asset_path: ./deb_dist/python3-pythonservice_${{ steps.get_version.outputs.VERSION }}-1_all.deb # Adjusted for dpkg-buildpackage output
+          asset_name: PythonService_${{ steps.get_version.outputs.VERSION }}_all.deb
           asset_content_type: application/vnd.debian.binary-package
