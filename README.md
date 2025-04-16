@@ -74,3 +74,7 @@ El entorno de ejecución incluye las siguientes bibliotecas principales (ver `re
 ## Ejecución
 py -m pip install -r requirements.txt
 py -m uvicorn main:app --host 0.0.0.0 --port 8000 --reload
+
+## Nueva Version
+git tag v1.0.3
+git push origin v1.0.3
