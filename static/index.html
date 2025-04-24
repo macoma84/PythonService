@@ -39,6 +39,9 @@
         #status { margin-top: 15px; font-style: italic; color: #555; }
         .fileListItem { display: flex; justify-content: space-between; align-items: center; }
         .filename { cursor: pointer; flex-grow: 1; }
+        .git-sync-button { background-color: #337ab7; color: white; padding: 10px 15px; margin-top: 10px; }
+        .git-sync-button:hover { background-color: #286090; }
+        #syncStatus { margin-top: 10px; font-style: italic; color: #555; }
     </style>
 </head>
 <body>
@@ -85,6 +88,13 @@
         <div class="section">
             <h2>Available Microservices</h2>
             <ul id="fileList"></ul>
+        </div>
+
+        <div class="section">
+            <h2>Git Synchronization</h2>
+            <p>Synchronize microservices from a configured Git repository.</p>
+            <button id="gitSyncButton" class="git-sync-button">Sync with Git Repository</button>
+            <div id="syncStatus"></div>
         </div>
 
         <div class="section">
@@ -340,6 +350,38 @@
 
         // Initial load of files
         fetchFiles();
+
+        // Git Synchronization functionality
+        const gitSyncButton = document.getElementById('gitSyncButton');
+        const syncStatusDiv = document.getElementById('syncStatus');
+
+        // Handle Git synchronization
+        gitSyncButton.addEventListener('click', async () => {
+            try {
+                syncStatusDiv.textContent = 'Syncing with Git repository...';
+                gitSyncButton.disabled = true;
+                
+                const response = await fetch('/git-sync');
+                const result = await response.json();
+                
+                if (!response.ok) {
+                    throw new Error(result.detail || `HTTP error! status: ${response.status}`);
+                }
+                
+                if (result.success) {
+                    syncStatusDiv.textContent = `Success: ${result.message}`;
+                    // Refresh the file list after successful sync
+                    fetchFiles();
+                } else {
+                    syncStatusDiv.textContent = `Sync failed: ${result.message}`;
+                }
+            } catch (error) {
+                syncStatusDiv.textContent = `Git sync failed: ${error.message}`;
+                console.error('Git sync error:', error);
+            } finally {
+                gitSyncButton.disabled = false;
+            }
+        });
     </script>
 </body>
 </html>
