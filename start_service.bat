@@ -10,6 +10,12 @@ if %ERRORLEVEL% neq 0 (
     exit /b 1
 )
 
+echo Limpiando archivos temporales...
+if exist "__pycache__" rmdir /s /q "__pycache__"
+if exist "modules\__pycache__" rmdir /s /q "modules\__pycache__"
+if exist ".pytest_cache" rmdir /s /q ".pytest_cache"
+
+
 echo Iniciando el servidor...
 py -m uvicorn main:app --host 0.0.0.0 --port 8000 --reload
 

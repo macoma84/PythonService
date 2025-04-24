@@ -4,6 +4,12 @@ FROM python:3.10-slim
 # Set the working directory in the container
 WORKDIR /app
 
+# Install Git and other dependencies
+RUN apt-get update && \
+    apt-get install -y git && \
+    apt-get clean && \
+    rm -rf /var/lib/apt/lists/*
+
 # Copy the requirements file into the container at /app
 COPY requirements.txt .
 
@@ -20,6 +26,11 @@ EXPOSE 8000
 ENV MODULE_NAME main
 ENV VARIABLE_NAME app
 ENV MODULES_DIR=/app/modules
+ENV GIT_REPO_URL=""
+ENV GIT_USERNAME=""
+ENV GIT_TOKEN=""
+ENV GIT_BRANCH="main"
+ENV GIT_SYNC_ON_STARTUP="false"
 
 # Run the application using Uvicorn
 # Use 0.0.0.0 to make it accessible from outside the container

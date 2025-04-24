@@ -9,3 +9,7 @@ services:
       - ./persistent_modules:/app/modules
     environment:
       - MODULES_DIR=/app/modules
+      - GIT_REPO_URL=${GIT_REPO_URL:-}
+      - GIT_TOKEN=${GIT_TOKEN:-}
+      - GIT_BRANCH=${GIT_BRANCH:-main}
+      - GIT_SYNC_ON_STARTUP=${GIT_SYNC_ON_STARTUP:-false}

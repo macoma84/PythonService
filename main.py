@@ -3,6 +3,9 @@ import sys
 import importlib
 from pathlib import Path
 from typing import List
+import shutil
+import tempfile
+import git  # Import GitPython
 
 from fastapi import FastAPI, File, UploadFile, HTTPException, APIRouter, Body
 from fastapi.responses import HTMLResponse, JSONResponse
@@ -16,9 +19,21 @@ MODULES_DIR.mkdir(exist_ok=True)
 if str(MODULES_DIR.resolve()) not in sys.path:
     sys.path.insert(0, str(MODULES_DIR.resolve().parent)) # Add parent of modules to path
 
+# Git configuration from environment variables
+GIT_REPO_URL = os.environ.get("GIT_REPO_URL", "")
+GIT_USERNAME = os.environ.get("GIT_USERNAME", "")
+GIT_TOKEN = os.environ.get("GIT_TOKEN", "")
+GIT_BRANCH = os.environ.get("GIT_BRANCH", "main")
+GIT_SYNC_ON_STARTUP = os.environ.get("GIT_SYNC_ON_STARTUP", "false").lower() == "true"
+
 # Define model for file content
 class FileContent(BaseModel):
     content: str
+
+class GitSyncResponse(BaseModel):
+    success: bool
+    message: str
+    synced_files: List[str] = []
 
 app = FastAPI(title="Dynamic Microservice Runner")
 
@@ -27,6 +42,82 @@ app.mount("/static", StaticFiles(directory="static"), name="static")
 
 # In-memory store for loaded routers to prevent duplicate mounting
 loaded_routers = {}
+
+def sync_with_git() -> GitSyncResponse:
+    """
+    Synchronizes the modules directory with the configured Git repository.
+    Returns a GitSyncResponse object with the results of the operation.
+    """
+    if not GIT_REPO_URL:
+        return GitSyncResponse(
+            success=False, 
+            message="Git repository URL not configured. Set GIT_REPO_URL environment variable."
+        )
+    
+    try:
+        # Create a temporary directory for git operations
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+              # Prepare the repo URL with username and token if provided
+            repo_url = GIT_REPO_URL
+            if "https://" in GIT_REPO_URL:
+                # Proper authentication format: https://username:token@domain.com/repo
+                if GIT_USERNAME and GIT_TOKEN:
+                    # Insert both username and token into the URL for authentication
+                    repo_url = GIT_REPO_URL.replace("https://", f"https://{GIT_USERNAME}:{GIT_TOKEN}@")
+                elif GIT_TOKEN:
+                    # If only token is provided, use it as the credential
+                    repo_url = GIT_REPO_URL.replace("https://", f"https://oauth2:{GIT_TOKEN}@")
+            
+            # Clone the repository
+            print(f"Cloning git repository from {GIT_REPO_URL} (branch: {GIT_BRANCH})...")
+            repo = git.Repo.clone_from(repo_url, temp_path, branch=GIT_BRANCH)
+            
+            # Get a list of Python files
+            synced_files = []
+            
+            # Create backup of current modules
+            backup_dir = Path(f"{MODULES_DIR.parent}/modules_backup_{int(os.urandom(3).hex(), 16)}")
+            if MODULES_DIR.exists() and any(MODULES_DIR.iterdir()):
+                print(f"Creating backup of current modules at {backup_dir}")
+                shutil.copytree(MODULES_DIR, backup_dir)
+            
+            # Copy Python files from the cloned repo to modules directory
+            # excluding certain directories like .git, __pycache__, etc.
+            exclude_dirs = {'.git', '__pycache__', '.github', '.vscode', '.idea'}
+            
+            # Create or ensure modules directory exists
+            MODULES_DIR.mkdir(exist_ok=True)
+            
+            # Copy files from temp dir to modules dir
+            for item in temp_path.glob('**/*'):
+                if any(part for part in item.parts if part in exclude_dirs):
+                    continue
+                
+                if item.is_file() and item.suffix == '.py':
+                    # Get relative path from the temp_dir
+                    rel_path = item.relative_to(temp_path)
+                    target_path = MODULES_DIR / rel_path
+                    
+                    # Make sure the parent directory exists
+                    target_path.parent.mkdir(parents=True, exist_ok=True)
+                    
+                    # Copy the file
+                    shutil.copy2(item, target_path)
+                    synced_files.append(str(rel_path))
+            
+            # Load all modules after sync
+            load_all_modules()
+            
+            return GitSyncResponse(
+                success=True,
+                message=f"Successfully synchronized {len(synced_files)} files from Git repository",
+                synced_files=synced_files
+            )
+    
+    except Exception as e:
+        print(f"Error during Git synchronization: {e}")
+        return GitSyncResponse(success=False, message=f"Git sync failed: {str(e)}")
 
 def load_module(filename: str):
     """Dynamically loads or reloads a Python module and mounts its router."""
@@ -87,8 +178,18 @@ def load_all_modules():
 
 @app.on_event("startup")
 async def startup_event():
-    """Load all modules on application startup."""
-    load_all_modules()
+    """Load all modules on application startup and sync with Git if configured."""
+    # Check if Git sync on startup is enabled
+    if GIT_SYNC_ON_STARTUP and GIT_REPO_URL:
+        print("Git sync on startup is enabled. Syncing with repository...")
+        sync_result = sync_with_git()
+        if sync_result.success:
+            print(f"Git sync successful: {sync_result.message}")
+        else:
+            print(f"Git sync failed: {sync_result.message}")
+    else:
+        # If no Git sync, just load modules normally
+        load_all_modules()
 
 @app.get("/", response_class=HTMLResponse)
 async def read_root():
@@ -191,3 +292,14 @@ async def delete_file(filename: str):
         return {"filename": filename, "message": "File deleted successfully."}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to delete file: {e}")
+
+@app.get("/git-sync", response_model=GitSyncResponse)
+async def trigger_git_sync():
+    """Endpoint to manually trigger synchronization with Git repository."""
+    if not GIT_REPO_URL:
+        return GitSyncResponse(
+            success=False, 
+            message="Git repository URL not configured. Set GIT_REPO_URL environment variable."
+        )
+    
+    return sync_with_git()
