@@ -15,9 +15,60 @@
         label { display: block; margin-bottom: 5px; font-weight: bold; }
         input[type="file"], button, select { padding: 10px; margin-top: 5px; border-radius: 4px; border: 1px solid #ccc; }
         button { background-color: #5cb85c; color: white; cursor: pointer; border: none; }
-        button:hover { background-color: #4cae4c; }        #fileList { list-style: none; padding: 0; }
-        #fileList li { padding: 8px; border-bottom: 1px solid #eee; }
-        #fileList li:hover { background-color: #f0f0f0; }
+        button:hover { background-color: #4cae4c; }        
+        #fileList { list-style: none; padding: 0; }
+        
+        /* Tree View Styles */
+        .tree-view {
+            list-style: none;
+            padding-left: 0;
+        }
+        .tree-view ul {
+            list-style: none;
+            padding-left: 20px;
+        }
+        .tree-item {
+            padding: 3px 0;
+            position: relative;
+        }
+        .tree-item-header {
+            display: flex;
+            align-items: center;
+            cursor: pointer;
+            padding: 4px 0;
+        }
+        .tree-item-header:hover {
+            background-color: #f0f0f0;
+        }
+        .folder-icon, .file-icon {
+            display: inline-block;
+            width: 20px;
+            text-align: center;
+            margin-right: 5px;
+        }
+        .folder-icon:before {
+            content: "📁";
+        }
+        .folder-open:before {
+            content: "📂";
+        }
+        .file-icon:before {
+            content: "📄";
+        }
+        .toggle-btn {
+            cursor: pointer;
+            width: 12px;
+            height: 12px;
+            display: inline-block;
+            text-align: center;
+            margin-right: 5px;
+            font-size: 12px;
+            line-height: 12px;
+        }
+        .hidden {
+            display: none;
+        }
+        
         #editorContainer { margin-top: 10px; }
         .CodeMirror { border: 1px solid #ddd; height: 400px; }
         .drop-area { 
@@ -42,11 +93,47 @@
         .git-sync-button { background-color: #337ab7; color: white; padding: 10px 15px; margin-top: 10px; }
         .git-sync-button:hover { background-color: #286090; }
         #syncStatus { margin-top: 10px; font-style: italic; color: #555; }
+        
+        /* Directory creation styles */
+        .directory-controls {
+            margin-bottom: 10px;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+        #currentDirectory {
+            font-weight: bold;
+            margin-bottom: 10px;
+        }
+        .breadcrumb {
+            display: flex;
+            flex-wrap: wrap;
+            padding: 0;
+            margin-bottom: 10px;
+            list-style: none;
+        }
+        .breadcrumb-item {
+            cursor: pointer;
+            color: #337ab7;
+            padding: 0 5px;
+        }
+        .breadcrumb-item:after {
+            content: "/";
+            margin-left: 5px;
+            color: #555;
+        }
+        .breadcrumb-item:last-child:after {
+            content: "";
+        }
+        .breadcrumb-item.active {
+            color: #555;
+            cursor: default;
+        }
     </style>
 </head>
 <body>
     <div class="container">
-        <h1>Dynamic Microservice Runner 1.4.0</h1>
+        <h1>Dynamic Microservice Runner 1.5.0</h1>
 
         <div class="instructions">
             <h2>How to Use</h2>
@@ -87,7 +174,16 @@
 
         <div class="section">
             <h2>Available Microservices</h2>
-            <ul id="fileList"></ul>
+            <div id="currentDirectory">
+                <ol class="breadcrumb">
+                    <li class="breadcrumb-item active">Root</li>
+                </ol>
+            </div>
+            <div class="directory-controls">
+                <input type="text" id="newDirName" placeholder="New folder name">
+                <button id="createDirButton">Create Folder</button>
+            </div>
+            <div class="tree-view" id="fileTree"></div>
         </div>
 
         <div class="section">
@@ -112,14 +208,18 @@
     <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.0/mode/python/python.min.js"></script>    <script>
         const fileInput = document.getElementById('fileInput');
         const uploadButton = document.getElementById('uploadButton');
-        const fileList = document.getElementById('fileList');
+        const fileTree = document.getElementById('fileTree');
         const fileSelector = document.getElementById('fileSelector');
         const editorContainer = document.getElementById('editorContainer');
         const saveButton = document.getElementById('saveButton');
         const statusDiv = document.getElementById('status');
         const dropArea = document.getElementById('dropArea');
+        const createDirButton = document.getElementById('createDirButton');
+        const newDirNameInput = document.getElementById('newDirName');
+        
         let editor = null;
-        let currentFilename = null;
+        let currentFilePath = null;
+        let currentDirectory = "";  // Current directory path relative to modules
         
         // Drag and Drop functionality
         ['dragenter', 'dragover', 'dragleave', 'drop'].forEach(eventName => {
@@ -164,7 +264,7 @@
             }
         }
         
-        // Refactored upload function to be reusable
+        // Updated upload function to handle subdirectories
         async function uploadFile(file) {
             if (!file) {
                 statusDiv.textContent = 'Please select a file to upload.';
@@ -177,6 +277,11 @@
 
             const formData = new FormData();
             formData.append('file', file);
+            
+            // Add current directory to the upload if we're in a subdirectory
+            if (currentDirectory) {
+                formData.append('directory', currentDirectory);
+            }
 
             try {
                 statusDiv.textContent = 'Uploading...';
@@ -214,47 +319,255 @@
             saveButton.style.display = 'inline-block';
         }
 
-        // Fetch and display the list of files
-        async function fetchFiles() {
-            try {
-                const response = await fetch('/files');
-                if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
-                const files = await response.json();
-                fileList.innerHTML = ''; // Clear existing list
-                fileSelector.innerHTML = '<option value="">-- Select a file --</option>'; // Clear and add default option
-                files.forEach(filename => {
-                    // Create list item with filename and delete button
-                    const li = document.createElement('li');
-                    li.className = 'fileListItem';
+        // Convert flat list of files/directories to hierarchical tree structure
+        function buildFileTree(items) {
+            // Root of the tree
+            const tree = {
+                name: "Root",
+                isDir: true,
+                path: "",
+                children: {}
+            };
+            
+            // First pass: create directories
+            items.forEach(item => {
+                if (item.is_dir) {
+                    let parts = item.path.split('/');
+                    let currentLevel = tree;
                     
-                    // Create a span for the filename
-                    const fileNameSpan = document.createElement('span');
-                    fileNameSpan.className = 'filename';
-                    fileNameSpan.textContent = filename;
-                    fileNameSpan.onclick = () => fetchFileContent(filename);
+                    for (let i = 0; i < parts.length; i++) {
+                        const part = parts[i];
+                        if (!part) continue; // Skip empty parts
+                        
+                        // Create path up to this point
+                        const pathSoFar = parts.slice(0, i + 1).join('/');
+                        
+                        // If this part doesn't exist in the current level, add it
+                        if (!currentLevel.children[part]) {
+                            currentLevel.children[part] = {
+                                name: part,
+                                isDir: true,
+                                path: pathSoFar,
+                                children: {}
+                            };
+                        }
+                        
+                        // Move to the next level
+                        currentLevel = currentLevel.children[part];
+                    }
+                }
+            });
+            
+            // Second pass: add files to their respective directories
+            items.forEach(item => {
+                if (!item.is_dir) {
+                    let parts = item.path.split('/');
+                    const filename = parts.pop(); // Last part is the filename
+                    let currentLevel = tree;
+                    
+                    // Navigate to the directory where this file should be
+                    for (const part of parts) {
+                        if (!part) continue; // Skip empty parts
+                        currentLevel = currentLevel.children[part] || currentLevel;
+                    }
+                    
+                    // Add the file to the current directory
+                    currentLevel.children[filename] = {
+                        name: filename,
+                        isDir: false,
+                        path: item.path
+                    };
+                }
+            });
+            
+            return tree;
+        }
+        
+        // Render the file tree recursively
+        function renderFileTree(tree, parentElement, isRoot = false) {
+            // For the root node, we don't need to create an item
+            if (!isRoot) {
+                const listItem = document.createElement('div');
+                listItem.className = 'tree-item';
+                
+                const header = document.createElement('div');
+                header.className = 'tree-item-header';
+                
+                if (tree.isDir) {
+                    // Directory item
+                    const toggleBtn = document.createElement('span');
+                    toggleBtn.className = 'toggle-btn';
+                    toggleBtn.innerHTML = '▶';
+                    
+                    const folderIcon = document.createElement('span');
+                    folderIcon.className = 'folder-icon';
+                    
+                    const nameSpan = document.createElement('span');
+                    nameSpan.textContent = tree.name;
+                    
+                    header.appendChild(toggleBtn);
+                    header.appendChild(folderIcon);
+                    header.appendChild(nameSpan);
+                    
+                    // Add click handler to toggle visibility
+                    const childContainer = document.createElement('div');
+                    childContainer.className = 'children hidden';
+                    
+                    header.addEventListener('click', () => {
+                        childContainer.classList.toggle('hidden');
+                        toggleBtn.innerHTML = childContainer.classList.contains('hidden') ? '▶' : '▼';
+                        folderIcon.classList.toggle('folder-open');
+                        
+                        // Update current directory when clicking on a folder
+                        navigateToDirectory(tree.path);
+                    });
+                    
+                    listItem.appendChild(header);
+                    listItem.appendChild(childContainer);
+                    parentElement.appendChild(listItem);
+                    
+                    // Recursively render children
+                    const childKeys = Object.keys(tree.children).sort((a, b) => {
+                        // Sort directories first, then by name
+                        const aIsDir = tree.children[a].isDir;
+                        const bIsDir = tree.children[b].isDir;
+                        if (aIsDir && !bIsDir) return -1;
+                        if (!aIsDir && bIsDir) return 1;
+                        return a.toLowerCase().localeCompare(b.toLowerCase());
+                    });
+                    
+                    for (const key of childKeys) {
+                        renderFileTree(tree.children[key], childContainer);
+                    }
+                    
+                    return;
+                } else {
+                    // File item
+                    const fileIcon = document.createElement('span');
+                    fileIcon.className = 'file-icon';
+                    
+                    const nameSpan = document.createElement('span');
+                    nameSpan.className = 'filename';
+                    nameSpan.textContent = tree.name;
+                    nameSpan.onclick = (e) => {
+                        e.stopPropagation();
+                        fetchFileContent(tree.path);
+                    };
                     
                     // Create a delete button
                     const deleteBtn = document.createElement('button');
                     deleteBtn.textContent = 'Delete';
                     deleteBtn.className = 'deleteButton';
                     deleteBtn.onclick = (e) => {
-                        e.stopPropagation(); // Prevent triggering the li click event
-                        if (confirm(`Are you sure you want to delete ${filename}?`)) {
-                            deleteFile(filename);
+                        e.stopPropagation(); // Prevent triggering the header click event
+                        if (confirm(`Are you sure you want to delete ${tree.name}?`)) {
+                            deleteFile(tree.path);
                         }
                     };
                     
-                    // Add elements to list item
-                    li.appendChild(fileNameSpan);
-                    li.appendChild(deleteBtn);
-                    fileList.appendChild(li);
+                    header.appendChild(fileIcon);
+                    header.appendChild(nameSpan);
+                    header.appendChild(deleteBtn);
                     
-                    // Populate dropdown selector
-                    const option = document.createElement('option');
-                    option.value = filename;
-                    option.textContent = filename;
-                    fileSelector.appendChild(option);
+                    listItem.appendChild(header);
+                    parentElement.appendChild(listItem);
+                    return;
+                }
+            } else {
+                // For the root, just render children
+                const childKeys = Object.keys(tree.children).sort((a, b) => {
+                    // Sort directories first, then by name
+                    const aIsDir = tree.children[a].isDir;
+                    const bIsDir = tree.children[b].isDir;
+                    if (aIsDir && !bIsDir) return -1;
+                    if (!aIsDir && bIsDir) return 1;
+                    return a.toLowerCase().localeCompare(b.toLowerCase());
                 });
+                
+                for (const key of childKeys) {
+                    renderFileTree(tree.children[key], parentElement);
+                }
+            }
+        }
+
+        // Update the breadcrumb navigation based on current directory
+        function updateBreadcrumb() {
+            const breadcrumb = document.querySelector('.breadcrumb');
+            breadcrumb.innerHTML = ''; // Clear existing breadcrumb
+            
+            // Add root item
+            const rootItem = document.createElement('li');
+            rootItem.className = 'breadcrumb-item';
+            rootItem.textContent = 'Root';
+            rootItem.onclick = () => navigateToDirectory("");
+            
+            if (!currentDirectory) {
+                rootItem.classList.add('active');
+            }
+            
+            breadcrumb.appendChild(rootItem);
+            
+            // Add directory parts if in a subdirectory
+            if (currentDirectory) {
+                const parts = currentDirectory.split('/');
+                let path = '';
+                
+                parts.forEach((part, index) => {
+                    if (!part) return; // Skip empty parts
+                    
+                    path += (path ? '/' : '') + part;
+                    const item = document.createElement('li');
+                    item.className = 'breadcrumb-item';
+                    item.textContent = part;
+                    
+                    // Last item is the current directory
+                    if (index === parts.length - 1) {
+                        item.classList.add('active');
+                    } else {
+                        item.onclick = () => navigateToDirectory(path);
+                    }
+                    
+                    breadcrumb.appendChild(item);
+                });
+            }
+        }
+        
+        // Navigate to a specific directory
+        function navigateToDirectory(path) {
+            currentDirectory = path;
+            updateBreadcrumb();
+            statusDiv.textContent = `Navigated to /${path || "root"}`;
+        }
+        
+        // Fetch and display the list of files
+        async function fetchFiles() {
+            try {
+                const response = await fetch('/files');
+                if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
+                const files = await response.json();
+                
+                // Clear existing file tree and file selector
+                fileTree.innerHTML = '';
+                fileSelector.innerHTML = '<option value="">-- Select a file --</option>';
+                
+                // Build hierarchical tree structure
+                const tree = buildFileTree(files);
+                
+                // Render the tree
+                renderFileTree(tree, fileTree, true);
+                
+                // Populate the file selector dropdown
+                files.forEach(item => {
+                    if (!item.is_dir) {
+                        const option = document.createElement('option');
+                        option.value = item.path;
+                        option.textContent = item.path;
+                        fileSelector.appendChild(option);
+                    }
+                });
+                
+                // Update breadcrumb based on current directory
+                updateBreadcrumb();
             } catch (error) {
                 statusDiv.textContent = `Error fetching files: ${error.message}`;
                 console.error('Error fetching files:', error);
@@ -262,35 +575,38 @@
         }
 
         // Fetch content of a specific file
-        async function fetchFileContent(filename) {
-            if (!filename) {
+        async function fetchFileContent(filePath) {
+            if (!filePath) {
                 editorContainer.innerHTML = ''; // Clear editor
                 saveButton.style.display = 'none';
-                currentFilename = null;
+                currentFilePath = null;
                 return;
             }
             try {
-                statusDiv.textContent = `Loading ${filename}...`;
-                const response = await fetch(`/files/${filename}`);
+                statusDiv.textContent = `Loading ${filePath}...`;
+                const response = await fetch(`/files/${encodeURIComponent(filePath)}`);
                 if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
                 const data = await response.json();
-                currentFilename = filename;
+                currentFilePath = filePath;
                 initializeEditor(data.content);
-                statusDiv.textContent = `${filename} loaded.`;
+                statusDiv.textContent = `${filePath} loaded.`;
+                
+                // Update the file selector to match the currently loaded file
+                fileSelector.value = filePath;
             } catch (error) {
-                statusDiv.textContent = `Error loading file ${filename}: ${error.message}`;
+                statusDiv.textContent = `Error loading file ${filePath}: ${error.message}`;
                 console.error('Error loading file:', error);
-                currentFilename = null;
+                currentFilePath = null;
                 editorContainer.innerHTML = '';
                 saveButton.style.display = 'none';
             }
         }
 
         // Delete a file
-        async function deleteFile(filename) {
+        async function deleteFile(filePath) {
             try {
-                statusDiv.textContent = `Deleting ${filename}...`;
-                const response = await fetch(`/files/${filename}`, {
+                statusDiv.textContent = `Deleting ${filePath}...`;
+                const response = await fetch(`/files/${encodeURIComponent(filePath)}`, {
                     method: 'DELETE'
                 });
                 const result = await response.json();
@@ -300,19 +616,85 @@
                 statusDiv.textContent = `Success: ${result.message}`;
                 
                 // If the deleted file was currently open in the editor, clear the editor
-                if (currentFilename === filename) {
+                if (currentFilePath === filePath) {
                     editorContainer.innerHTML = '';
                     saveButton.style.display = 'none';
-                    currentFilename = null;
+                    currentFilePath = null;
                 }
                 
                 // Refresh the file list
                 fetchFiles();
             } catch (error) {
-                statusDiv.textContent = `Failed to delete ${filename}: ${error.message}`;
+                statusDiv.textContent = `Failed to delete ${filePath}: ${error.message}`;
                 console.error('Delete error:', error);
             }
-        }        // Handle file upload
+        }
+        
+        // Create new directory
+        async function createDirectory(dirName) {
+            if (!dirName || dirName.trim() === '') {
+                statusDiv.textContent = 'Please enter a directory name.';
+                return;
+            }
+            
+            // Clean up directory name
+            dirName = dirName.trim().replace(/[\\/?%*:|"<>]/g, '_');
+            
+            // Create a directory path relative to current location
+            const dirPath = currentDirectory ? `${currentDirectory}/${dirName}` : dirName;
+            
+            try {
+                statusDiv.textContent = `Creating directory ${dirPath}...`;
+                
+                // Create an empty file just to ensure the directories are created
+                // The backend will create any necessary __init__.py files
+                const tempFileName = `__temp_${Date.now()}.py`;
+                const tempFilePath = `${dirPath}/${tempFileName}`;
+                
+                // Create a blob with placeholder content
+                const content = '# Temporary file for directory creation\n# This file can be safely deleted\n';
+                const blob = new Blob([content], { type: 'text/plain' });
+                const file = new File([blob], tempFileName, { type: 'text/plain' });
+                
+                // Upload the temp file to create the directory
+                const formData = new FormData();
+                formData.append('file', file);
+                formData.append('directory', dirPath);
+                
+                const response = await fetch('/upload', {
+                    method: 'POST',
+                    body: formData
+                });
+                
+                if (!response.ok) {
+                    const result = await response.json();
+                    throw new Error(result.detail || `HTTP error! status: ${response.status}`);
+                }
+                
+                // Now delete the temporary file
+                const deleteResponse = await fetch(`/files/${encodeURIComponent(tempFilePath)}`, {
+                    method: 'DELETE'
+                });
+                
+                if (!deleteResponse.ok) {
+                    console.warn('Failed to clean up temporary file, but directory was created');
+                }
+                
+                statusDiv.textContent = `Directory ${dirPath} created successfully.`;
+                newDirNameInput.value = '';
+                
+                // Navigate to the newly created directory
+                navigateToDirectory(dirPath);
+                
+                // Refresh the file list
+                fetchFiles();
+            } catch (error) {
+                statusDiv.textContent = `Failed to create directory: ${error.message}`;
+                console.error('Error creating directory:', error);
+            }
+        }
+        
+        // Handle file upload
         uploadButton.addEventListener('click', () => {
             uploadFile(fileInput.files[0]);
         });
@@ -320,17 +702,19 @@
         // Handle file selection change
         fileSelector.addEventListener('change', (event) => {
             fetchFileContent(event.target.value);
-        });        // Handle save changes
+        });
+        
+        // Handle save changes
         saveButton.addEventListener('click', async () => {
-            if (!editor || !currentFilename) {
+            if (!editor || !currentFilePath) {
                 statusDiv.textContent = 'No file selected or editor not initialized.';
                 return;
             }
             const content = editor.getValue();
             try {
-                statusDiv.textContent = `Saving ${currentFilename}...`;
+                statusDiv.textContent = `Saving ${currentFilePath}...`;
                 // Send content as a proper JSON object that matches the Pydantic model in FastAPI
-                const response = await fetch(`/files/${currentFilename}`, {
+                const response = await fetch(`/files/${encodeURIComponent(currentFilePath)}`, {
                     method: 'POST',
                     headers: {
                         'Content-Type': 'application/json', // Use JSON content type
@@ -343,9 +727,14 @@
                 }
                 statusDiv.textContent = `Success: ${result.message}`;
             } catch (error) {
-                statusDiv.textContent = `Error saving file ${currentFilename}: ${error.message}`;
+                statusDiv.textContent = `Error saving file ${currentFilePath}: ${error.message}`;
                 console.error('Save error:', error);
             }
+        });
+        
+        // Handle create directory button
+        createDirButton.addEventListener('click', () => {
+            createDirectory(newDirNameInput.value);
         });
 
         // Initial load of files
