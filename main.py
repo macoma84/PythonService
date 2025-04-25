@@ -111,6 +111,44 @@ def sync_with_git() -> GitSyncResponse:
             repo.git.config('user.email', 'automated@example.com')
             repo.git.config('user.name', 'Automated Git Sync')
         
+        # Try to pull with a merge commit if needed
+        try:
+            # Pull with explicit merge strategy to handle divergent branches
+            origin.pull(GIT_BRANCH, strategy='recursive', strategy_option='theirs')
+        except GitCommandError as pull_error:
+            # If standard pull fails, try with --allow-unrelated-histories
+            if "fatal: refusing to merge unrelated histories" in str(pull_error):
+                repo.git.pull('--allow-unrelated-histories', strategy='recursive', strategy_option='theirs')
+            else:
+                raise
+
+        # Apply stashed changes if any were created
+        if stash_created:
+            try:
+                print("Applying stashed changes after Git sync...")
+                repo.git.stash('pop')
+                print("Stashed changes applied successfully")
+            except GitCommandError as pop_error:
+                print(f"Warning: Failed to apply stashed changes: {pop_error}")
+                return GitSyncResponse(
+                    success=True,
+                    message="Git sync completed, but local changes could not be re-applied due to conflicts. " +
+                            "Your changes are preserved in the git stash."
+                )
+
+        # Commit merged changes if there are any
+        if repo.is_dirty(untracked_files=True):
+            repo.index.commit("Merged changes from Git sync")
+
+        # Push changes to the remote repository
+        origin.push()
+
+        # Reset the remote URL to remove credentials (for security)
+        if GIT_USERNAME and GIT_TOKEN and GIT_REPO_URL:
+            repo.git.remote('set-url', 'origin', GIT_REPO_URL)
+
+        return GitSyncResponse(
+            success=True,
             message="Git synchronization completed successfully."
         )
 
