@@ -11,6 +11,7 @@ from fastapi import FastAPI, File, UploadFile, HTTPException, APIRouter, Body
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
+from git import Repo, GitCommandError
 
 # Ensure the modules directory is in the Python path
 # Get modules directory path from environment variable or use default
@@ -53,71 +54,103 @@ def sync_with_git() -> GitSyncResponse:
             success=False, 
             message="Git repository URL not configured. Set GIT_REPO_URL environment variable."
         )
-    
+
     try:
-        # Create a temporary directory for git operations
-        with tempfile.TemporaryDirectory() as temp_dir:
-            temp_path = Path(temp_dir)
-              # Prepare the repo URL with username and token if provided
-            repo_url = GIT_REPO_URL
-            if "https://" in GIT_REPO_URL:
-                # Proper authentication format: https://username:token@domain.com/repo
-                if GIT_USERNAME and GIT_TOKEN:
-                    # Insert both username and token into the URL for authentication
-                    repo_url = GIT_REPO_URL.replace("https://", f"https://{GIT_USERNAME}:{GIT_TOKEN}@")
-                elif GIT_TOKEN:
-                    # If only token is provided, use it as the credential
-                    repo_url = GIT_REPO_URL.replace("https://", f"https://oauth2:{GIT_TOKEN}@")
-            
-            # Clone the repository
-            print(f"Cloning git repository from {GIT_REPO_URL} (branch: {GIT_BRANCH})...")
-            repo = git.Repo.clone_from(repo_url, temp_path, branch=GIT_BRANCH)
-            
-            # Get a list of Python files
-            synced_files = []
-            
-            # Create backup of current modules
-            backup_dir = Path(f"{MODULES_DIR.parent}/modules_backup_{int(os.urandom(3).hex(), 16)}")
-            if MODULES_DIR.exists() and any(MODULES_DIR.iterdir()):
-                print(f"Creating backup of current modules at {backup_dir}")
-                shutil.copytree(MODULES_DIR, backup_dir)
-            
-            # Copy Python files from the cloned repo to modules directory
-            # excluding certain directories like .git, __pycache__, etc.
-            exclude_dirs = {'.git', '__pycache__', '.github', '.vscode', '.idea'}
-            
-            # Create or ensure modules directory exists
-            MODULES_DIR.mkdir(exist_ok=True)
-            
-            # Copy files from temp dir to modules dir
-            for item in temp_path.glob('**/*'):
-                if any(part for part in item.parts if part in exclude_dirs):
-                    continue
+        repo = Repo(MODULES_DIR.parent)
+        
+        # Check if there are local changes that need to be preserved
+        has_local_changes = repo.is_dirty(untracked_files=True)
+        stash_created = False
+        
+        if has_local_changes:
+            # Stash local changes to preserve them
+            print("Stashing local changes before Git sync...")
+            try:
+                # Configure git user for stashing
+                if not repo.config_reader().has_section('user'):
+                    repo.git.config('user.email', 'automated@example.com')
+                    repo.git.config('user.name', 'Automated Git Sync')
                 
-                if item.is_file() and item.suffix == '.py':
-                    # Get relative path from the temp_dir
-                    rel_path = item.relative_to(temp_path)
-                    target_path = MODULES_DIR / rel_path
-                    
-                    # Make sure the parent directory exists
-                    target_path.parent.mkdir(parents=True, exist_ok=True)
-                    
-                    # Copy the file
-                    shutil.copy2(item, target_path)
-                    synced_files.append(str(rel_path))
-            
-            # Load all modules after sync
-            load_all_modules()
-            
+                # Create stash
+                repo.git.stash('push', '-m', 'Automatic stash before Git sync')
+                stash_created = True
+                print("Local changes stashed successfully")
+            except GitCommandError as stash_error:
+                print(f"Warning: Failed to stash changes: {stash_error}")
+                # We'll continue anyway and see if the pull can succeed
+
+        # Stage all changes in the modules directory
+        repo.git.add(MODULES_DIR.as_posix())
+
+        # Remove deleted files from the repository
+        deleted_files = [item.a_path for item in repo.index.diff(None) if item.change_type == 'D']
+        for file in deleted_files:
+            repo.git.rm(file)
+
+        # Configure remote URL with embedded credentials if available
+        if GIT_USERNAME and GIT_TOKEN and GIT_REPO_URL:
+            # Parse the repo URL to insert credentials
+            if GIT_REPO_URL.startswith('https://'):
+                # Format: https://username:token@github.com/user/repo.git
+                url_parts = GIT_REPO_URL.split('https://')
+                if len(url_parts) == 2:
+                    auth_url = f'https://{GIT_USERNAME}:{GIT_TOKEN}@{url_parts[1]}'
+                    # Set the remote URL with credentials
+                    repo.git.remote('set-url', 'origin', auth_url)
+                    print("Git remote URL configured with authentication")
+        
+        # Pull latest changes from the remote repository
+        origin = repo.remotes.origin
+        
+        # Set git config for pull strategy
+        repo.git.config('pull.rebase', 'false')
+        repo.git.config('pull.ff', 'false')  # Allow non-fast-forward merges
+        
+        # Configure git user for potential merge commits
+        if not repo.config_reader().has_section('user'):
+            repo.git.config('user.email', 'automated@example.com')
+            repo.git.config('user.name', 'Automated Git Sync')
+        
+            message="Git synchronization completed successfully."
+        )
+
+    except GitCommandError as e:
+        return GitSyncResponse(success=False, message=f"Git sync failed: {str(e)}")
+
+@app.post("/git-commit", response_model=GitSyncResponse)
+async def commit_changes_to_git(commit_message: str = Body(..., embed=True)):
+    """Commits new and modified files in the modules directory to the Git repository."""
+    if not GIT_REPO_URL:
+        return GitSyncResponse(
+            success=False,
+            message="Git repository URL not configured. Set GIT_REPO_URL environment variable."
+        )
+
+    try:
+        repo = Repo(MODULES_DIR.parent)
+
+        # Stage all changes in the modules directory
+        repo.git.add(MODULES_DIR.as_posix())
+
+        # Check if there are changes to commit
+        if repo.is_dirty(untracked_files=True):
+            # Commit changes
+            repo.index.commit(commit_message)
             return GitSyncResponse(
                 success=True,
-                message=f"Successfully synchronized {len(synced_files)} files from Git repository",
-                synced_files=synced_files
+                message="Changes committed successfully to Git repository."
             )
-    
-    except Exception as e:
-        print(f"Error during Git synchronization: {e}")
-        return GitSyncResponse(success=False, message=f"Git sync failed: {str(e)}")
+        else:
+            return GitSyncResponse(
+                success=False,
+                message="No changes to commit."
+            )
+
+    except GitCommandError as e:
+        return GitSyncResponse(
+            success=False,
+            message=f"Git commit failed: {str(e)}"
+        )
 
 def load_module(filename: str):
     """Dynamically loads or reloads a Python module and mounts its router."""
