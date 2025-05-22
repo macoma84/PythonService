@@ -16,3 +16,4 @@ mysql-connector-python>=8.0.33
 GitPython>=3.1.30
 cx_Oracle>=8.3.0
 xmltodict>=0.13.0
+reportlab>=3.6.12
