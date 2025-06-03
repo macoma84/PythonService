@@ -6,11 +6,60 @@ from typing import List
 import shutil
 import tempfile
 import git  # Import GitPython
+import logging
+import io
+import datetime
+import asyncio
+from collections import deque
+from fastapi.responses import StreamingResponse
 
 from fastapi import FastAPI, File, UploadFile, HTTPException, APIRouter, Body
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
+
+# Configure logging
+# In-memory log storage using a deque with max length to prevent memory issues
+MAX_LOG_ENTRIES = 1000
+log_storage = deque(maxlen=MAX_LOG_ENTRIES)
+
+# Custom log handler to capture logs in memory
+class InMemoryLogHandler(logging.Handler):
+    def emit(self, record):
+        log_entry = {
+            'timestamp': datetime.datetime.fromtimestamp(record.created).strftime('%Y-%m-%d %H:%M:%S.%f')[:-3],
+            'level': record.levelname,
+            'module': record.module,
+            'message': self.format(record)
+        }
+        log_storage.append(log_entry)
+
+# Setup root logger with our custom handler
+root_logger = logging.getLogger()
+root_logger.setLevel(logging.INFO)
+memory_handler = InMemoryLogHandler()
+memory_handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(module)s - %(message)s'))
+root_logger.addHandler(memory_handler)
+
+# Redirect print statements to the logging system
+original_print = print
+
+def logging_print(*args, **kwargs):
+    """Redirect print statements to the logging system."""
+    # Get the frame where print was called
+    frame = sys._getframe(1)
+    module_name = frame.f_globals.get('__name__', 'unknown')
+    
+    # Construct the message from print arguments
+    message = " ".join(str(arg) for arg in args)
+    
+    # Log the message at INFO level
+    logging.getLogger(module_name).info(f"[PRINT] {message}")
+    
+    # Still perform the original print functionality
+    return original_print(*args, **kwargs)
+
+print = logging_print
 
 # Ensure the modules directory is in the Python path
 # Get modules directory path from environment variable or use default
@@ -139,6 +188,10 @@ def load_module(filename: str):
         # The module name is the filename without .py extension
         module_name = path_parts[-1].removesuffix(".py")
         
+        # Create a logger for this module specifically
+        module_logger = logging.getLogger(f"modules.{module_name}")
+        module_logger.setLevel(logging.DEBUG)
+        
         # Create the full import path (e.g., modules.subdir.my_service)
         if len(path_parts) > 1:
             # File is in a subdirectory
@@ -162,10 +215,10 @@ def load_module(filename: str):
         # Check if module is already imported
         if import_path in sys.modules:
             module = importlib.reload(sys.modules[import_path])
-            print(f"Reloaded module: {import_path}")
+            module_logger.info(f"Reloaded module: {import_path}")
         else:
             module = importlib.import_module(import_path)
-            print(f"Loaded module: {import_path}")
+            module_logger.info(f"Loaded module: {import_path}")
 
         # Find an APIRouter instance in the module
         router_instance = None
@@ -173,6 +226,7 @@ def load_module(filename: str):
             attr = getattr(module, attr_name)
             if isinstance(attr, APIRouter):
                 router_instance = attr
+                module_logger.info(f"Found router with {len(getattr(attr, 'routes', []))} routes")
                 break
 
         if router_instance:
@@ -187,20 +241,19 @@ def load_module(filename: str):
             else:
                 prefix = f"/{module_name}"
                 
-            # Unmount existing router if reloading
-            if prefix in loaded_routers:
+            # Unmount existing router if reloading            if prefix in loaded_routers:
                 # FastAPI doesn't have a direct unmount. We rely on reload and potentially restart for full cleanup.
                 # For now, we just overwrite the entry in our tracking dict.
-                print(f"Router for {prefix} already exists. Reloading might require app restart for full effect.")
+                module_logger.warning(f"Router for {prefix} already exists. Reloading might require app restart for full effect.")
 
             app.include_router(router_instance, prefix=prefix, tags=[str(rel_path)])
             loaded_routers[prefix] = router_instance
-            print(f"Mounted router from {filename} at {prefix}")
+            module_logger.info(f"Mounted router from {filename} at {prefix}")
         else:
-            print(f"No APIRouter found in {filename}")
+            module_logger.warning(f"No APIRouter found in {filename}")
 
     except Exception as e:
-        print(f"Error loading module {filename}: {e}")
+        module_logger.error(f"Error loading module {filename}: {str(e)}", exc_info=True)
         # Optionally raise or handle the error more gracefully
         # raise HTTPException(status_code=500, detail=f"Error loading module {filename}: {e}")
 
@@ -452,3 +505,181 @@ async def trigger_git_sync():
         )
     
     return sync_with_git()
+
+@app.get("/logs", response_class=HTMLResponse)
+async def view_logs():
+    """Serves a simple HTML page for viewing logs."""
+    html_content = """
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <title>Module Logs</title>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <style>
+            body { font-family: monospace; margin: 20px; background-color: #f4f4f4; }
+            .container { max-width: 100%; margin: auto; background: #fff; padding: 20px; border-radius: 8px; box-shadow: 0 0 10px rgba(0,0,0,0.1); }
+            h1 { color: #333; }
+            #logContainer { height: 600px; overflow-y: auto; border: 1px solid #ddd; padding: 10px; background-color: #f9f9f9; }
+            .log-entry { margin-bottom: 5px; padding: 3px; border-bottom: 1px solid #eee; }
+            .timestamp { color: #888; }
+            .level-INFO { color: #28a745; }
+            .level-WARNING { color: #ffc107; }
+            .level-ERROR { color: #dc3545; }
+            .level-DEBUG { color: #17a2b8; }
+            .module { font-weight: bold; }
+            .controls { margin-bottom: 10px; }
+            button { padding: 8px 15px; margin-right: 5px; cursor: pointer; background-color: #007bff; color: white; border: none; border-radius: 4px; }
+            button:hover { background-color: #0069d9; }
+            select { padding: 8px; }
+        </style>
+    </head>
+    <body>
+        <div class="container">
+            <h1>Module Logs</h1>
+            <div class="controls">
+                <button id="refreshButton">Refresh</button>
+                <button id="clearButton">Clear View</button>
+                <button id="streamButton">Start Live Stream</button>
+                <select id="logLevel">
+                    <option value="all">All Levels</option>
+                    <option value="DEBUG">Debug</option>
+                    <option value="INFO">Info</option>
+                    <option value="WARNING">Warning</option>
+                    <option value="ERROR">Error</option>
+                </select>
+                <input type="text" id="moduleFilter" placeholder="Filter by module name">
+            </div>
+            <div id="logContainer"></div>
+        </div>
+
+        <script>
+            const logContainer = document.getElementById('logContainer');
+            const refreshButton = document.getElementById('refreshButton');
+            const clearButton = document.getElementById('clearButton');
+            const streamButton = document.getElementById('streamButton');
+            const logLevelSelect = document.getElementById('logLevel');
+            const moduleFilter = document.getElementById('moduleFilter');
+            
+            let isStreaming = false;
+            let eventSource = null;
+
+            function displayLogs(logs) {
+                // Filter logs based on selected level and module name
+                const level = logLevelSelect.value;
+                const moduleText = moduleFilter.value.toLowerCase();
+                
+                const filteredLogs = logs.filter(log => {
+                    const levelMatch = level === 'all' || log.level === level;
+                    const moduleMatch = !moduleText || log.module.toLowerCase().includes(moduleText);
+                    return levelMatch && moduleMatch;
+                });
+                
+                // Display the filtered logs
+                logContainer.innerHTML = filteredLogs.map(log => `
+                    <div class="log-entry">
+                        <span class="timestamp">${log.timestamp}</span> -
+                        <span class="level-${log.level}">${log.level}</span> -
+                        <span class="module">${log.module}</span> -
+                        <span class="message">${log.message}</span>
+                    </div>
+                `).join('');
+                
+                // Auto-scroll to bottom
+                logContainer.scrollTop = logContainer.scrollHeight;
+            }
+
+            async function fetchLogs() {
+                try {
+                    const response = await fetch('/api/logs');
+                    if (response.ok) {
+                        const logs = await response.json();
+                        displayLogs(logs);
+                    } else {
+                        console.error('Failed to fetch logs');
+                    }
+                } catch (error) {
+                    console.error('Error fetching logs:', error);
+                }
+            }
+
+            function startLogStream() {
+                if (eventSource) {
+                    eventSource.close();
+                }
+                
+                eventSource = new EventSource('/api/logs/stream');
+                isStreaming = true;
+                streamButton.textContent = 'Stop Live Stream';
+                
+                eventSource.onmessage = function(event) {
+                    try {
+                        const logs = JSON.parse(event.data);
+                        displayLogs(logs);
+                    } catch (error) {
+                        console.error('Error parsing log stream data:', error);
+                    }
+                };
+                
+                eventSource.onerror = function() {
+                    stopLogStream();
+                };
+            }
+
+            function stopLogStream() {
+                if (eventSource) {
+                    eventSource.close();
+                    eventSource = null;
+                }
+                isStreaming = false;
+                streamButton.textContent = 'Start Live Stream';
+            }
+
+            // Event listeners
+            refreshButton.addEventListener('click', fetchLogs);
+            
+            clearButton.addEventListener('click', () => {
+                logContainer.innerHTML = '';
+            });
+            
+            streamButton.addEventListener('click', () => {
+                if (isStreaming) {
+                    stopLogStream();
+                } else {
+                    startLogStream();
+                }
+            });
+            
+            logLevelSelect.addEventListener('change', fetchLogs);
+            
+            moduleFilter.addEventListener('input', fetchLogs);
+            
+            // Initial load
+            fetchLogs();
+        </script>
+    </body>
+    </html>
+    """
+    return HTMLResponse(content=html_content)
+
+@app.get("/api/logs")
+async def get_logs():
+    """Return all logs as JSON for the UI."""
+    # Convert deque to list for serialization
+    return JSONResponse(content=list(log_storage))
+
+async def log_stream_generator():
+    """Generator for streaming logs via SSE."""
+    while True:
+        # Convert deque to list for serialization and send as SSE
+        yield f"data: {JSONResponse(content=list(log_storage)).body.decode()}\n\n"
+        # Wait before sending the next update
+        await asyncio.sleep(1)
+
+@app.get("/api/logs/stream")
+async def stream_logs():
+    """Stream logs using Server-Sent Events (SSE)."""
+    return StreamingResponse(
+        log_stream_generator(),
+        media_type="text/event-stream"
+    )
