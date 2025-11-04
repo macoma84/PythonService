@@ -84,6 +84,21 @@ class GitSyncResponse(BaseModel):
     message: str
     synced_files: List[str] = []
 
+class GitCommitRequest(BaseModel):
+    message: str
+
+class GitPushRequest(BaseModel):
+    commit_message: str = None
+
+class GitBranchRequest(BaseModel):
+    branch_name: str
+
+class GitMergeRequest(BaseModel):
+    branch_name: str
+
+class GitDiffRequest(BaseModel):
+    file_path: str = None
+
 app = FastAPI(title="Dynamic Microservice Runner")
 
 # Mount static files directory
@@ -92,81 +107,478 @@ app.mount("/static", StaticFiles(directory="static"), name="static")
 # In-memory store for loaded routers to prevent duplicate mounting
 loaded_routers = {}
 
-def sync_with_git() -> GitSyncResponse:
+def get_authenticated_repo_url() -> str:
+    """Returns the Git repository URL with authentication credentials."""
+    repo_url = GIT_REPO_URL
+    if "https://" in GIT_REPO_URL:
+        if GIT_USERNAME and GIT_TOKEN:
+            repo_url = GIT_REPO_URL.replace("https://", f"https://{GIT_USERNAME}:{GIT_TOKEN}@")
+        elif GIT_TOKEN:
+            repo_url = GIT_REPO_URL.replace("https://", f"https://oauth2:{GIT_TOKEN}@")
+    return repo_url
+
+def get_or_init_repo() -> git.Repo:
     """
-    Synchronizes the modules directory with the configured Git repository.
-    Returns a GitSyncResponse object with the results of the operation.
+    Gets the git repository from the modules directory.
+    If it doesn't exist, initializes or clones it.
+    """
+    if not GIT_REPO_URL:
+        raise ValueError("Git repository URL not configured. Set GIT_REPO_URL environment variable.")
+
+    modules_git_dir = MODULES_DIR / ".git"
+
+    # Check if modules directory already has a git repo
+    if modules_git_dir.exists():
+        try:
+            repo = git.Repo(MODULES_DIR)
+            print(f"Using existing git repository in {MODULES_DIR}")
+            return repo
+        except git.InvalidGitRepositoryError:
+            print(f"Invalid git repository found in {MODULES_DIR}, reinitializing...")
+            shutil.rmtree(modules_git_dir)
+
+    # Initialize new repository
+    print(f"Initializing git repository in {MODULES_DIR}")
+    MODULES_DIR.mkdir(exist_ok=True)
+    repo = git.Repo.init(MODULES_DIR)
+
+    # Configure remote
+    repo_url = get_authenticated_repo_url()
+
+    try:
+        origin = repo.remote('origin')
+        origin.set_url(repo_url)
+    except ValueError:
+        # Remote doesn't exist, create it
+        origin = repo.create_remote('origin', repo_url)
+
+    # Configure user if provided
+    if GIT_USERNAME:
+        with repo.config_writer() as config:
+            config.set_value("user", "name", GIT_USERNAME)
+            if "@" in GIT_USERNAME:
+                config.set_value("user", "email", GIT_USERNAME)
+
+    return repo
+
+def git_pull() -> GitSyncResponse:
+    """
+    Pulls changes from the remote repository to the modules directory.
     """
     if not GIT_REPO_URL:
         return GitSyncResponse(
-            success=False, 
+            success=False,
             message="Git repository URL not configured. Set GIT_REPO_URL environment variable."
         )
-    
+
     try:
-        # Create a temporary directory for git operations
-        with tempfile.TemporaryDirectory() as temp_dir:
-            temp_path = Path(temp_dir)
-              # Prepare the repo URL with username and token if provided
-            repo_url = GIT_REPO_URL
-            if "https://" in GIT_REPO_URL:
-                # Proper authentication format: https://username:token@domain.com/repo
-                if GIT_USERNAME and GIT_TOKEN:
-                    # Insert both username and token into the URL for authentication
-                    repo_url = GIT_REPO_URL.replace("https://", f"https://{GIT_USERNAME}:{GIT_TOKEN}@")
-                elif GIT_TOKEN:
-                    # If only token is provided, use it as the credential
-                    repo_url = GIT_REPO_URL.replace("https://", f"https://oauth2:{GIT_TOKEN}@")
-            
-            # Clone the repository
-            print(f"Cloning git repository from {GIT_REPO_URL} (branch: {GIT_BRANCH})...")
-            repo = git.Repo.clone_from(repo_url, temp_path, branch=GIT_BRANCH)
-            
-            # Get a list of Python files
-            synced_files = []
-            
-            # Create backup of current modules
-            backup_dir = Path(f"{MODULES_DIR.parent}/modules_backup_{int(os.urandom(3).hex(), 16)}")
-            if MODULES_DIR.exists() and any(MODULES_DIR.iterdir()):
-                print(f"Creating backup of current modules at {backup_dir}")
-                shutil.copytree(MODULES_DIR, backup_dir)
-            
-            # Copy Python files from the cloned repo to modules directory
-            # excluding certain directories like .git, __pycache__, etc.
-            exclude_dirs = {'.git', '__pycache__', '.github', '.vscode', '.idea'}
-            
-            # Create or ensure modules directory exists
-            MODULES_DIR.mkdir(exist_ok=True)
-            
-            # Copy files from temp dir to modules dir
-            for item in temp_path.glob('**/*'):
-                if any(part for part in item.parts if part in exclude_dirs):
-                    continue
-                
-                if item.is_file() and item.suffix == '.py':
-                    # Get relative path from the temp_dir
-                    rel_path = item.relative_to(temp_path)
-                    target_path = MODULES_DIR / rel_path
-                    
-                    # Make sure the parent directory exists
-                    target_path.parent.mkdir(parents=True, exist_ok=True)
-                    
-                    # Copy the file
-                    shutil.copy2(item, target_path)
-                    synced_files.append(str(rel_path))
-            
-            # Load all modules after sync
-            load_all_modules()
-            
+        repo = get_or_init_repo()
+
+        # Fetch from remote
+        print(f"Fetching from remote repository (branch: {GIT_BRANCH})...")
+        origin = repo.remote('origin')
+        fetch_info = origin.fetch()
+
+        # Check if branch exists locally
+        branch_exists = GIT_BRANCH in [ref.name for ref in repo.heads]
+
+        if not branch_exists:
+            # Create local branch tracking remote
+            print(f"Creating local branch {GIT_BRANCH} tracking origin/{GIT_BRANCH}")
+            repo.create_head(GIT_BRANCH, origin.refs[GIT_BRANCH])
+            repo.heads[GIT_BRANCH].set_tracking_branch(origin.refs[GIT_BRANCH])
+
+        # Checkout the branch
+        if repo.active_branch.name != GIT_BRANCH:
+            print(f"Checking out branch {GIT_BRANCH}")
+            repo.heads[GIT_BRANCH].checkout()
+
+        # Pull changes
+        print(f"Pulling changes from origin/{GIT_BRANCH}...")
+        pull_info = origin.pull(GIT_BRANCH)
+
+        # Get list of changed files
+        changed_files = []
+        for info in pull_info:
+            if hasattr(info, 'commit') and info.commit:
+                for item in info.commit.stats.files.keys():
+                    if item.endswith('.py'):
+                        changed_files.append(item)
+
+        # Reload modules after pull
+        load_all_modules()
+
+        return GitSyncResponse(
+            success=True,
+            message=f"Successfully pulled changes from remote repository",
+            synced_files=changed_files
+        )
+
+    except Exception as e:
+        print(f"Error during git pull: {e}")
+        return GitSyncResponse(success=False, message=f"Git pull failed: {str(e)}")
+
+def git_push(commit_message: str = None) -> GitSyncResponse:
+    """
+    Pushes local changes to the remote repository.
+    Optionally commits changes before pushing.
+    """
+    if not GIT_REPO_URL:
+        return GitSyncResponse(
+            success=False,
+            message="Git repository URL not configured. Set GIT_REPO_URL environment variable."
+        )
+
+    try:
+        repo = get_or_init_repo()
+
+        # Stage all changes if commit message provided
+        if commit_message:
+            print("Staging all changes...")
+            repo.git.add(A=True)
+
+            # Check if there are changes to commit
+            if repo.is_dirty() or repo.untracked_files:
+                print(f"Committing changes: {commit_message}")
+                repo.index.commit(commit_message)
+            else:
+                print("No changes to commit")
+
+        # Push to remote
+        print(f"Pushing to origin/{GIT_BRANCH}...")
+        origin = repo.remote('origin')
+        push_info = origin.push(GIT_BRANCH)
+
+        pushed_files = []
+        for info in push_info:
+            if hasattr(info, 'summary'):
+                print(f"Push result: {info.summary}")
+
+        return GitSyncResponse(
+            success=True,
+            message=f"Successfully pushed changes to remote repository",
+            synced_files=pushed_files
+        )
+
+    except Exception as e:
+        print(f"Error during git push: {e}")
+        return GitSyncResponse(success=False, message=f"Git push failed: {str(e)}")
+
+def git_status() -> dict:
+    """
+    Gets the status of the git repository.
+    Returns information about modified, added, deleted, and untracked files.
+    """
+    if not GIT_REPO_URL:
+        return {
+            "success": False,
+            "message": "Git repository URL not configured."
+        }
+
+    try:
+        repo = get_or_init_repo()
+
+        # Get current branch
+        current_branch = repo.active_branch.name if repo.head.is_valid() else "No branch"
+
+        # Get modified files
+        modified_files = [item.a_path for item in repo.index.diff(None)]
+
+        # Get staged files
+        staged_files = [item.a_path for item in repo.index.diff("HEAD")]
+
+        # Get untracked files
+        untracked_files = repo.untracked_files
+
+        # Check if ahead/behind remote
+        ahead = 0
+        behind = 0
+        try:
+            if repo.head.is_valid() and current_branch != "No branch":
+                tracking_branch = repo.active_branch.tracking_branch()
+                if tracking_branch:
+                    ahead = len(list(repo.iter_commits(f'{tracking_branch}..HEAD')))
+                    behind = len(list(repo.iter_commits(f'HEAD..{tracking_branch}')))
+        except Exception as e:
+            print(f"Could not check ahead/behind status: {e}")
+
+        return {
+            "success": True,
+            "current_branch": current_branch,
+            "modified_files": modified_files,
+            "staged_files": staged_files,
+            "untracked_files": untracked_files,
+            "ahead": ahead,
+            "behind": behind,
+            "is_dirty": repo.is_dirty()
+        }
+
+    except Exception as e:
+        print(f"Error getting git status: {e}")
+        return {
+            "success": False,
+            "message": f"Failed to get git status: {str(e)}"
+        }
+
+def git_diff(file_path: str = None) -> dict:
+    """
+    Gets the diff of changes in the repository.
+    If file_path is provided, shows diff for that file only.
+    """
+    if not GIT_REPO_URL:
+        return {
+            "success": False,
+            "message": "Git repository URL not configured."
+        }
+
+    try:
+        repo = get_or_init_repo()
+
+        # Get diff
+        if file_path:
+            # Diff for specific file
+            diff = repo.git.diff('HEAD', '--', file_path)
+        else:
+            # Diff for all changes
+            diff = repo.git.diff('HEAD')
+
+        return {
+            "success": True,
+            "diff": diff
+        }
+
+    except Exception as e:
+        print(f"Error getting git diff: {e}")
+        return {
+            "success": False,
+            "message": f"Failed to get git diff: {str(e)}"
+        }
+
+def git_commit(message: str) -> GitSyncResponse:
+    """
+    Commits all changes with the provided message.
+    """
+    if not GIT_REPO_URL:
+        return GitSyncResponse(
+            success=False,
+            message="Git repository URL not configured."
+        )
+
+    try:
+        repo = get_or_init_repo()
+
+        # Stage all changes
+        print("Staging all changes...")
+        repo.git.add(A=True)
+
+        # Check if there are changes to commit
+        if not repo.is_dirty() and not repo.untracked_files:
             return GitSyncResponse(
                 success=True,
-                message=f"Successfully synchronized {len(synced_files)} files from Git repository",
-                synced_files=synced_files
+                message="No changes to commit",
+                synced_files=[]
             )
-    
+
+        # Commit changes
+        print(f"Committing changes: {message}")
+        commit = repo.index.commit(message)
+
+        # Get list of files in the commit
+        changed_files = list(commit.stats.files.keys())
+
+        return GitSyncResponse(
+            success=True,
+            message=f"Successfully committed changes: {commit.hexsha[:7]}",
+            synced_files=changed_files
+        )
+
     except Exception as e:
-        print(f"Error during Git synchronization: {e}")
-        return GitSyncResponse(success=False, message=f"Git sync failed: {str(e)}")
+        print(f"Error during git commit: {e}")
+        return GitSyncResponse(success=False, message=f"Git commit failed: {str(e)}")
+
+def git_branches() -> dict:
+    """
+    Lists all local and remote branches.
+    """
+    if not GIT_REPO_URL:
+        return {
+            "success": False,
+            "message": "Git repository URL not configured."
+        }
+
+    try:
+        repo = get_or_init_repo()
+
+        # Get local branches
+        local_branches = [branch.name for branch in repo.heads]
+
+        # Get remote branches
+        remote_branches = []
+        try:
+            origin = repo.remote('origin')
+            origin.fetch()
+            remote_branches = [ref.name for ref in origin.refs]
+        except Exception as e:
+            print(f"Could not fetch remote branches: {e}")
+
+        # Get current branch
+        current_branch = repo.active_branch.name if repo.head.is_valid() else None
+
+        return {
+            "success": True,
+            "current_branch": current_branch,
+            "local_branches": local_branches,
+            "remote_branches": remote_branches
+        }
+
+    except Exception as e:
+        print(f"Error listing git branches: {e}")
+        return {
+            "success": False,
+            "message": f"Failed to list branches: {str(e)}"
+        }
+
+def git_create_branch(branch_name: str) -> dict:
+    """
+    Creates a new branch.
+    """
+    if not GIT_REPO_URL:
+        return {
+            "success": False,
+            "message": "Git repository URL not configured."
+        }
+
+    try:
+        repo = get_or_init_repo()
+
+        # Check if branch already exists
+        if branch_name in [branch.name for branch in repo.heads]:
+            return {
+                "success": False,
+                "message": f"Branch '{branch_name}' already exists"
+            }
+
+        # Create new branch
+        print(f"Creating new branch: {branch_name}")
+        new_branch = repo.create_head(branch_name)
+
+        return {
+            "success": True,
+            "message": f"Branch '{branch_name}' created successfully"
+        }
+
+    except Exception as e:
+        print(f"Error creating git branch: {e}")
+        return {
+            "success": False,
+            "message": f"Failed to create branch: {str(e)}"
+        }
+
+def git_checkout_branch(branch_name: str) -> dict:
+    """
+    Checks out (switches to) a different branch.
+    """
+    if not GIT_REPO_URL:
+        return {
+            "success": False,
+            "message": "Git repository URL not configured."
+        }
+
+    try:
+        repo = get_or_init_repo()
+
+        # Check if branch exists locally
+        if branch_name not in [branch.name for branch in repo.heads]:
+            # Try to create from remote
+            try:
+                origin = repo.remote('origin')
+                origin.fetch()
+                if f"origin/{branch_name}" in [ref.name for ref in origin.refs]:
+                    print(f"Creating local branch {branch_name} from origin/{branch_name}")
+                    repo.create_head(branch_name, origin.refs[branch_name])
+                    repo.heads[branch_name].set_tracking_branch(origin.refs[branch_name])
+                else:
+                    return {
+                        "success": False,
+                        "message": f"Branch '{branch_name}' not found locally or on remote"
+                    }
+            except Exception as e:
+                return {
+                    "success": False,
+                    "message": f"Branch '{branch_name}' not found: {str(e)}"
+                }
+
+        # Checkout the branch
+        print(f"Checking out branch: {branch_name}")
+        repo.heads[branch_name].checkout()
+
+        # Reload modules after checkout
+        load_all_modules()
+
+        return {
+            "success": True,
+            "message": f"Switched to branch '{branch_name}'"
+        }
+
+    except Exception as e:
+        print(f"Error checking out git branch: {e}")
+        return {
+            "success": False,
+            "message": f"Failed to checkout branch: {str(e)}"
+        }
+
+def git_merge(branch_name: str) -> dict:
+    """
+    Merges the specified branch into the current branch.
+    """
+    if not GIT_REPO_URL:
+        return {
+            "success": False,
+            "message": "Git repository URL not configured."
+        }
+
+    try:
+        repo = get_or_init_repo()
+
+        # Check if branch exists
+        if branch_name not in [branch.name for branch in repo.heads]:
+            return {
+                "success": False,
+                "message": f"Branch '{branch_name}' not found"
+            }
+
+        current_branch = repo.active_branch.name
+        print(f"Merging {branch_name} into {current_branch}")
+
+        # Perform the merge
+        repo.git.merge(branch_name)
+
+        # Reload modules after merge
+        load_all_modules()
+
+        return {
+            "success": True,
+            "message": f"Successfully merged '{branch_name}' into '{current_branch}'"
+        }
+
+    except git.GitCommandError as e:
+        print(f"Git merge conflict: {e}")
+        return {
+            "success": False,
+            "message": f"Merge conflict: {str(e)}. Please resolve conflicts manually."
+        }
+    except Exception as e:
+        print(f"Error during git merge: {e}")
+        return {
+            "success": False,
+            "message": f"Failed to merge: {str(e)}"
+        }
+
+def sync_with_git() -> GitSyncResponse:
+    """
+    Legacy function - now calls git_pull for backward compatibility.
+    """
+    return git_pull()
 
 def load_module(filename: str):
     """Dynamically loads or reloads a Python module and mounts its router."""
@@ -497,14 +909,59 @@ async def delete_file(file_path: str):
 
 @app.get("/git-sync", response_model=GitSyncResponse)
 async def trigger_git_sync():
-    """Endpoint to manually trigger synchronization with Git repository."""
+    """Endpoint to manually trigger synchronization with Git repository (legacy - calls git-pull)."""
     if not GIT_REPO_URL:
         return GitSyncResponse(
-            success=False, 
+            success=False,
             message="Git repository URL not configured. Set GIT_REPO_URL environment variable."
         )
-    
+
     return sync_with_git()
+
+@app.get("/api/git/pull", response_model=GitSyncResponse)
+async def api_git_pull():
+    """Pull changes from remote repository."""
+    return git_pull()
+
+@app.post("/api/git/push", response_model=GitSyncResponse)
+async def api_git_push(request: GitPushRequest = Body(...)):
+    """Push local changes to remote repository. Optionally commit changes first."""
+    return git_push(commit_message=request.commit_message)
+
+@app.get("/api/git/status")
+async def api_git_status():
+    """Get the current git status."""
+    return git_status()
+
+@app.post("/api/git/diff")
+async def api_git_diff(request: GitDiffRequest = Body(...)):
+    """Get diff of changes. Optionally specify a file path."""
+    return git_diff(file_path=request.file_path)
+
+@app.post("/api/git/commit", response_model=GitSyncResponse)
+async def api_git_commit(request: GitCommitRequest = Body(...)):
+    """Commit all changes with the provided message."""
+    return git_commit(message=request.message)
+
+@app.get("/api/git/branches")
+async def api_git_branches():
+    """List all local and remote branches."""
+    return git_branches()
+
+@app.post("/api/git/branch/create")
+async def api_git_create_branch(request: GitBranchRequest = Body(...)):
+    """Create a new branch."""
+    return git_create_branch(branch_name=request.branch_name)
+
+@app.post("/api/git/branch/checkout")
+async def api_git_checkout_branch(request: GitBranchRequest = Body(...)):
+    """Checkout (switch to) a different branch."""
+    return git_checkout_branch(branch_name=request.branch_name)
+
+@app.post("/api/git/merge")
+async def api_git_merge(request: GitMergeRequest = Body(...)):
+    """Merge the specified branch into the current branch."""
+    return git_merge(branch_name=request.branch_name)
 
 @app.get("/logs", response_class=HTMLResponse)
 async def view_logs():

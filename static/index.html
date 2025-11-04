@@ -133,7 +133,7 @@
 </head>
 <body>
     <div class="container">
-        <h1>Dynamic Microservice Runner 1.8.0</h1>        <div class="instructions">
+        <h1>Dynamic Microservice Runner 1.8.1</h1>        <div class="instructions">
             <h2>How to Use</h2>
             <ol>
                 <li><strong>Upload Service:</strong> Use the "Choose File" button and "Upload Service" to upload a Python file (`.py`) containing a FastAPI `APIRouter` instance.</li>
@@ -191,9 +191,51 @@
         </div>
 
         <div class="section">
-            <h2>Git Synchronization</h2>
-            <p>Synchronize microservices from a configured Git repository.</p>
-            <button id="gitSyncButton" class="git-sync-button">Sync with Git Repository</button>
+            <h2>Git Synchronization (Bidirectional)</h2>
+            <p>Full bidirectional synchronization with the configured Git repository.</p>
+
+            <!-- Git Status Section -->
+            <div style="margin-bottom: 15px;">
+                <h3>Repository Status</h3>
+                <button id="gitStatusButton" class="git-sync-button" style="background-color: #5bc0de;">Check Status</button>
+                <div id="gitStatusDisplay" style="margin-top: 10px; padding: 10px; background-color: #f9f9f9; border-radius: 4px; font-family: monospace; white-space: pre-wrap;"></div>
+            </div>
+
+            <!-- Git Pull/Push Section -->
+            <div style="margin-bottom: 15px;">
+                <h3>Sync Changes</h3>
+                <button id="gitPullButton" class="git-sync-button" style="background-color: #5cb85c;">Pull from Remote</button>
+                <button id="gitDiffButton" class="git-sync-button" style="background-color: #f0ad4e;">View Changes</button>
+                <div id="gitDiffDisplay" style="margin-top: 10px; padding: 10px; background-color: #f9f9f9; border-radius: 4px; font-family: monospace; white-space: pre-wrap; max-height: 300px; overflow-y: auto;"></div>
+            </div>
+
+            <!-- Git Commit/Push Section -->
+            <div style="margin-bottom: 15px;">
+                <h3>Commit & Push</h3>
+                <input type="text" id="gitCommitMessage" placeholder="Enter commit message" style="width: 60%; margin-right: 10px;">
+                <button id="gitCommitButton" class="git-sync-button" style="background-color: #f0ad4e;">Commit</button>
+                <button id="gitPushButton" class="git-sync-button" style="background-color: #d9534f;">Push to Remote</button>
+            </div>
+
+            <!-- Git Branches Section -->
+            <div style="margin-bottom: 15px;">
+                <h3>Branch Management</h3>
+                <button id="gitListBranchesButton" class="git-sync-button" style="background-color: #9b59b6;">List Branches</button>
+                <div id="gitBranchesDisplay" style="margin-top: 10px; padding: 10px; background-color: #f9f9f9; border-radius: 4px;"></div>
+                <div style="margin-top: 10px;">
+                    <input type="text" id="newBranchName" placeholder="New branch name" style="width: 40%; margin-right: 10px;">
+                    <button id="gitCreateBranchButton" class="git-sync-button" style="background-color: #5bc0de;">Create Branch</button>
+                </div>
+                <div style="margin-top: 10px;">
+                    <input type="text" id="checkoutBranchName" placeholder="Branch name to checkout" style="width: 40%; margin-right: 10px;">
+                    <button id="gitCheckoutBranchButton" class="git-sync-button" style="background-color: #5cb85c;">Checkout Branch</button>
+                </div>
+                <div style="margin-top: 10px;">
+                    <input type="text" id="mergeBranchName" placeholder="Branch name to merge" style="width: 40%; margin-right: 10px;">
+                    <button id="gitMergeButton" class="git-sync-button" style="background-color: #f0ad4e;">Merge Branch</button>
+                </div>
+            </div>
+
             <div id="syncStatus"></div>
         </div>
 
@@ -745,34 +787,286 @@
         fetchFiles();
 
         // Git Synchronization functionality
-        const gitSyncButton = document.getElementById('gitSyncButton');
         const syncStatusDiv = document.getElementById('syncStatus');
 
-        // Handle Git synchronization
-        gitSyncButton.addEventListener('click', async () => {
+        // Git Status
+        document.getElementById('gitStatusButton').addEventListener('click', async () => {
+            const statusDisplay = document.getElementById('gitStatusDisplay');
             try {
-                syncStatusDiv.textContent = 'Syncing with Git repository...';
-                gitSyncButton.disabled = true;
-                
-                const response = await fetch('/git-sync');
+                statusDisplay.textContent = 'Checking status...';
+                const response = await fetch('/api/git/status');
                 const result = await response.json();
-                
-                if (!response.ok) {
-                    throw new Error(result.detail || `HTTP error! status: ${response.status}`);
-                }
-                
+
                 if (result.success) {
-                    syncStatusDiv.textContent = `Success: ${result.message}`;
-                    // Refresh the file list after successful sync
-                    fetchFiles();
+                    let statusText = `Current Branch: ${result.current_branch}\n`;
+                    statusText += `Ahead: ${result.ahead} | Behind: ${result.behind}\n`;
+                    statusText += `Is Dirty: ${result.is_dirty}\n\n`;
+
+                    if (result.modified_files.length > 0) {
+                        statusText += `Modified Files (${result.modified_files.length}):\n`;
+                        result.modified_files.forEach(file => statusText += `  - ${file}\n`);
+                        statusText += '\n';
+                    }
+
+                    if (result.staged_files.length > 0) {
+                        statusText += `Staged Files (${result.staged_files.length}):\n`;
+                        result.staged_files.forEach(file => statusText += `  - ${file}\n`);
+                        statusText += '\n';
+                    }
+
+                    if (result.untracked_files.length > 0) {
+                        statusText += `Untracked Files (${result.untracked_files.length}):\n`;
+                        result.untracked_files.forEach(file => statusText += `  - ${file}\n`);
+                    }
+
+                    if (!result.is_dirty && result.modified_files.length === 0 && result.untracked_files.length === 0) {
+                        statusText += 'Working directory clean!';
+                    }
+
+                    statusDisplay.textContent = statusText;
                 } else {
-                    syncStatusDiv.textContent = `Sync failed: ${result.message}`;
+                    statusDisplay.textContent = `Error: ${result.message}`;
                 }
             } catch (error) {
-                syncStatusDiv.textContent = `Git sync failed: ${error.message}`;
-                console.error('Git sync error:', error);
-            } finally {
-                gitSyncButton.disabled = false;
+                statusDisplay.textContent = `Error: ${error.message}`;
+                console.error('Git status error:', error);
+            }
+        });
+
+        // Git Pull
+        document.getElementById('gitPullButton').addEventListener('click', async () => {
+            try {
+                syncStatusDiv.textContent = 'Pulling from remote...';
+                const response = await fetch('/api/git/pull');
+                const result = await response.json();
+
+                if (result.success) {
+                    syncStatusDiv.textContent = `Success: ${result.message}`;
+                    if (result.synced_files.length > 0) {
+                        syncStatusDiv.textContent += `\nFiles changed: ${result.synced_files.join(', ')}`;
+                    }
+                    fetchFiles(); // Refresh file list
+                } else {
+                    syncStatusDiv.textContent = `Pull failed: ${result.message}`;
+                }
+            } catch (error) {
+                syncStatusDiv.textContent = `Error: ${error.message}`;
+                console.error('Git pull error:', error);
+            }
+        });
+
+        // Git Diff
+        document.getElementById('gitDiffButton').addEventListener('click', async () => {
+            const diffDisplay = document.getElementById('gitDiffDisplay');
+            try {
+                diffDisplay.textContent = 'Loading diff...';
+                const response = await fetch('/api/git/diff', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({file_path: null})
+                });
+                const result = await response.json();
+
+                if (result.success) {
+                    if (result.diff) {
+                        diffDisplay.textContent = result.diff || 'No changes to show';
+                    } else {
+                        diffDisplay.textContent = 'No changes to show';
+                    }
+                } else {
+                    diffDisplay.textContent = `Error: ${result.message}`;
+                }
+            } catch (error) {
+                diffDisplay.textContent = `Error: ${error.message}`;
+                console.error('Git diff error:', error);
+            }
+        });
+
+        // Git Commit
+        document.getElementById('gitCommitButton').addEventListener('click', async () => {
+            const commitMessage = document.getElementById('gitCommitMessage').value;
+            if (!commitMessage) {
+                syncStatusDiv.textContent = 'Please enter a commit message';
+                return;
+            }
+
+            try {
+                syncStatusDiv.textContent = 'Committing changes...';
+                const response = await fetch('/api/git/commit', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({message: commitMessage})
+                });
+                const result = await response.json();
+
+                if (result.success) {
+                    syncStatusDiv.textContent = `Success: ${result.message}`;
+                    document.getElementById('gitCommitMessage').value = ''; // Clear input
+                } else {
+                    syncStatusDiv.textContent = `Commit failed: ${result.message}`;
+                }
+            } catch (error) {
+                syncStatusDiv.textContent = `Error: ${error.message}`;
+                console.error('Git commit error:', error);
+            }
+        });
+
+        // Git Push
+        document.getElementById('gitPushButton').addEventListener('click', async () => {
+            const commitMessage = document.getElementById('gitCommitMessage').value;
+            try {
+                syncStatusDiv.textContent = 'Pushing to remote...';
+                const response = await fetch('/api/git/push', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({commit_message: commitMessage || null})
+                });
+                const result = await response.json();
+
+                if (result.success) {
+                    syncStatusDiv.textContent = `Success: ${result.message}`;
+                    if (commitMessage) {
+                        document.getElementById('gitCommitMessage').value = ''; // Clear input
+                    }
+                } else {
+                    syncStatusDiv.textContent = `Push failed: ${result.message}`;
+                }
+            } catch (error) {
+                syncStatusDiv.textContent = `Error: ${error.message}`;
+                console.error('Git push error:', error);
+            }
+        });
+
+        // Git List Branches
+        document.getElementById('gitListBranchesButton').addEventListener('click', async () => {
+            const branchesDisplay = document.getElementById('gitBranchesDisplay');
+            try {
+                branchesDisplay.textContent = 'Loading branches...';
+                const response = await fetch('/api/git/branches');
+                const result = await response.json();
+
+                if (result.success) {
+                    let branchesHTML = `<strong>Current Branch:</strong> ${result.current_branch || 'None'}<br><br>`;
+
+                    branchesHTML += '<strong>Local Branches:</strong><br>';
+                    if (result.local_branches.length > 0) {
+                        result.local_branches.forEach(branch => {
+                            const isCurrent = branch === result.current_branch;
+                            branchesHTML += `${isCurrent ? '→ ' : '  '}${branch}<br>`;
+                        });
+                    } else {
+                        branchesHTML += '  No local branches<br>';
+                    }
+
+                    branchesHTML += '<br><strong>Remote Branches:</strong><br>';
+                    if (result.remote_branches.length > 0) {
+                        result.remote_branches.forEach(branch => {
+                            branchesHTML += `  ${branch}<br>`;
+                        });
+                    } else {
+                        branchesHTML += '  No remote branches<br>';
+                    }
+
+                    branchesDisplay.innerHTML = branchesHTML;
+                } else {
+                    branchesDisplay.textContent = `Error: ${result.message}`;
+                }
+            } catch (error) {
+                branchesDisplay.textContent = `Error: ${error.message}`;
+                console.error('Git branches error:', error);
+            }
+        });
+
+        // Git Create Branch
+        document.getElementById('gitCreateBranchButton').addEventListener('click', async () => {
+            const branchName = document.getElementById('newBranchName').value;
+            if (!branchName) {
+                syncStatusDiv.textContent = 'Please enter a branch name';
+                return;
+            }
+
+            try {
+                syncStatusDiv.textContent = 'Creating branch...';
+                const response = await fetch('/api/git/branch/create', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({branch_name: branchName})
+                });
+                const result = await response.json();
+
+                if (result.success) {
+                    syncStatusDiv.textContent = `Success: ${result.message}`;
+                    document.getElementById('newBranchName').value = ''; // Clear input
+                } else {
+                    syncStatusDiv.textContent = `Error: ${result.message}`;
+                }
+            } catch (error) {
+                syncStatusDiv.textContent = `Error: ${error.message}`;
+                console.error('Git create branch error:', error);
+            }
+        });
+
+        // Git Checkout Branch
+        document.getElementById('gitCheckoutBranchButton').addEventListener('click', async () => {
+            const branchName = document.getElementById('checkoutBranchName').value;
+            if (!branchName) {
+                syncStatusDiv.textContent = 'Please enter a branch name';
+                return;
+            }
+
+            try {
+                syncStatusDiv.textContent = 'Checking out branch...';
+                const response = await fetch('/api/git/branch/checkout', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({branch_name: branchName})
+                });
+                const result = await response.json();
+
+                if (result.success) {
+                    syncStatusDiv.textContent = `Success: ${result.message}`;
+                    document.getElementById('checkoutBranchName').value = ''; // Clear input
+                    fetchFiles(); // Refresh file list
+                } else {
+                    syncStatusDiv.textContent = `Error: ${result.message}`;
+                }
+            } catch (error) {
+                syncStatusDiv.textContent = `Error: ${error.message}`;
+                console.error('Git checkout error:', error);
+            }
+        });
+
+        // Git Merge
+        document.getElementById('gitMergeButton').addEventListener('click', async () => {
+            const branchName = document.getElementById('mergeBranchName').value;
+            if (!branchName) {
+                syncStatusDiv.textContent = 'Please enter a branch name';
+                return;
+            }
+
+            if (!confirm(`Are you sure you want to merge ${branchName} into the current branch?`)) {
+                return;
+            }
+
+            try {
+                syncStatusDiv.textContent = 'Merging branch...';
+                const response = await fetch('/api/git/merge', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({branch_name: branchName})
+                });
+                const result = await response.json();
+
+                if (result.success) {
+                    syncStatusDiv.textContent = `Success: ${result.message}`;
+                    document.getElementById('mergeBranchName').value = ''; // Clear input
+                    fetchFiles(); // Refresh file list
+                } else {
+                    syncStatusDiv.textContent = `Error: ${result.message}`;
+                }
+            } catch (error) {
+                syncStatusDiv.textContent = `Error: ${error.message}`;
+                console.error('Git merge error:', error);
             }
         });
     </script>
